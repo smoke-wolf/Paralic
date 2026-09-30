@@ -78,9 +78,14 @@ class BlinkDetector:
         return self._baseline
 
     def thresholds(self) -> tuple[float, float]:
-        """(close threshold, open threshold)."""
+        """(close threshold, open threshold).
+
+        The rise needed to count as "closed" is a fraction of the headroom
+        above the baseline, so blinks are still caught when the baseline is
+        high (e.g. while looking at the bottom of the screen).
+        """
         b = self._baseline
-        t_close = float(np.clip(b + self.config.sensitivity, 0.30, 0.92))
+        t_close = float(np.clip(b + self.config.sensitivity * (1.0 - b), 0.30, 0.92))
         t_open = b + 0.5 * (t_close - b)
         return t_close, t_open
 
