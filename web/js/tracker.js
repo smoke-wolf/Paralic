@@ -1,0 +1,308 @@
+// Camera capture + WebSocket link to the Python eye tracker.
+//
+// Frames are captured from the webcam, JPEG-encoded and sent to the server as
+// binary messages:  uint32 header length | JSON header | JPEG bytes.
+// Only one frame is in flight at a time, so the stream automatically runs as
+// fast as the server can process it without building up lag.
+//
+// The server replies with a "frame" message per frame (gaze position, blink
+// state, ...) plus events such as "blink" and "double_blink".
+
+import { screenInfo, clientToScreen } from './screen-space.js';
+import { serverSettings } from './settings.js';
+
+class Emitter extends EventTarget {
+  on(type, fn) {
+    const handler = (e) => fn(e.detail);
+    this.addEventListener(type, handler);
+    return () => this.removeEventListener(type, handler);
+  }
+  emit(type, detail) {
+    this.dispatchEvent(new CustomEvent(type, { detail }));
+  }
+}
+
+export class EyeTracker extends Emitter {
+  constructor({ frameWidth = 960, quality = 0.82 } = {}) {
+    super();
+    this.frameWidth = frameWidth;
+    this.quality = quality;
+    this.video = null;
+    this.stream = null;
+    this.ws = null;
+    this.running = false;
+    this.connected = false;
+    this.frameId = 0;
+    this.inFlight = null;
+    this.inFlightSince = 0;
+    this.sentAt = new Map();
+    this.latencyMs = 0;
+    this.label = null;
+    this.overlay = false;
+    this.pending = new Map();
+    this.canvas = document.createElement('canvas');
+    this.ctx = this.canvas.getContext('2d', { alpha: false });
+    this.simulated = false;
+  }
+
+  /** Ask for the camera and start streaming. Throws if the camera is unavailable. */
+  async start(videoEl) {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      throw new Error('This browser cannot access the camera here. Open the page as http://localhost (not an IP address) in Chrome, Edge or Firefox.');
+    }
+    this.video = videoEl;
+    this.stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } },
+    });
+    videoEl.srcObject = this.stream;
+    videoEl.muted = true;
+    await videoEl.play();
+    this.running = true;
+    this.connect();
+    this.lastVideoCallback = 0;
+    this.scheduleCapture();
+    // requestVideoFrameCallback may pause when the preview is hidden; poll as a fallback.
+    this.pollTimer = setInterval(() => {
+      if (performance.now() - this.lastVideoCallback > 120) this.onVideoFrame();
+    }, 33);
+  }
+
+  stop() {
+    this.running = false;
+    clearInterval(this.pollTimer);
+    if (this.stream) this.stream.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    if (this.ws) this.ws.close();
+  }
+
+  /** Label attached to every captured frame (used during calibration). */
+  setLabel(label) {
+    this.label = label;
+  }
+
+  // -- WebSocket ------------------------------------------------------------
+  connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.connected = true;
+      this.send({ type: 'hello', screen: screenInfo(), settings: serverSettings() });
+      this.emit('connection', { connected: true });
+    };
+    ws.onmessage = (e) => {
+      let msg;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      this.onMessage(msg);
+    };
+    ws.onclose = () => {
+      const wasConnected = this.connected;
+      this.connected = false;
+      this.inFlight = null;
+      for (const [, waiters] of this.pending) waiters.forEach((w) => w.reject(new Error('Connection lost')));
+      this.pending.clear();
+      if (wasConnected) this.emit('connection', { connected: false });
+      if (this.running && !this.fatal) setTimeout(() => this.running && this.connect(), 1500);
+    };
+    ws.onerror = () => {};
+  }
+
+  onMessage(msg) {
+    if (msg.type === 'frame') {
+      const sent = this.sentAt.get(msg.id);
+      if (sent) {
+        this.latencyMs = performance.now() - sent;
+        this.sentAt.delete(msg.id);
+      }
+      if (this.sentAt.size > 50) this.sentAt.clear();
+      this.inFlight = null;
+    } else if (msg.type === 'fatal') {
+      this.fatal = msg.error;
+    }
+    const waiters = this.pending.get(msg.type);
+    if (waiters && waiters.length) {
+      const w = waiters.shift();
+      clearTimeout(w.timer);
+      w.resolve(msg);
+    }
+    this.emit(msg.type, msg);
+  }
+
+  send(cmd) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(cmd));
+      return true;
+    }
+    return false;
+  }
+
+  /** Send a command and wait for a reply of type `replyType`. */
+  request(cmd, replyType, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const waiters = this.pending.get(replyType) || [];
+      const entry = { resolve, reject, timer: null };
+      entry.timer = setTimeout(() => {
+        const list = this.pending.get(replyType) || [];
+        const i = list.indexOf(entry);
+        if (i >= 0) list.splice(i, 1);
+        reject(new Error(`Timed out waiting for ${replyType}`));
+      }, timeoutMs);
+      waiters.push(entry);
+      this.pending.set(replyType, waiters);
+      if (!this.send(cmd)) {
+        clearTimeout(entry.timer);
+        waiters.pop();
+        reject(new Error('Not connected to the eye tracker'));
+      }
+    });
+  }
+
+  // -- frame capture --------------------------------------------------------
+  scheduleCapture() {
+    if (!this.running || !this.video.requestVideoFrameCallback) return;
+    this.video.requestVideoFrameCallback(() => {
+      this.lastVideoCallback = performance.now();
+      this.onVideoFrame();
+      this.scheduleCapture();
+    });
+  }
+
+  onVideoFrame() {
+    if (!this.running || !this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    // Backpressure: wait for the previous frame's reply (with a safety timeout).
+    if (this.inFlight !== null && performance.now() - this.inFlightSince < 4000) return;
+    this.captureAndSend();
+  }
+
+  captureAndSend() {
+    const video = this.video;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return;
+    const w = Math.min(this.frameWidth, vw);
+    const hgt = Math.round((vh * w) / vw);
+    if (this.canvas.width !== w || this.canvas.height !== hgt) {
+      this.canvas.width = w;
+      this.canvas.height = hgt;
+    }
+    this.ctx.drawImage(video, 0, 0, w, hgt);
+    const id = ++this.frameId;
+    this.inFlight = id;
+    this.inFlightSince = performance.now();
+    const header = { id };
+    if (this.label) header.label = this.label;
+    if (this.overlay) header.overlay = true;
+    this.canvas.toBlob((blob) => {
+      if (!blob || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+        if (this.inFlight === id) this.inFlight = null;
+        return;
+      }
+      const hb = new TextEncoder().encode(JSON.stringify(header));
+      const len = new Uint8Array(4);
+      new DataView(len.buffer).setUint32(0, hb.length, true);
+      this.sentAt.set(id, performance.now());
+      this.ws.send(new Blob([len, hb, blob]));
+    }, 'image/jpeg', this.quality);
+  }
+}
+
+/**
+ * Demo mode: the mouse plays the role of your eyes and the "B" key plays the
+ * role of a blink (press it twice quickly to "double blink"). Handy to try the
+ * website without a webcam. It emits the same events as EyeTracker.
+ */
+export class SimTracker extends Emitter {
+  constructor() {
+    super();
+    this.simulated = true;
+    this.connected = true;
+    this.running = false;
+    this.frameId = 0;
+    this.latencyMs = 0;
+    this.overlay = false;
+    this.label = null;
+    this.mouse = null;
+    this.closedUntil = 0;
+    this.pendingBlink = null;
+    this.blinkGapMs = 550;
+    this.history = [];
+  }
+
+  async start() {
+    this.running = true;
+    this._onMove = (e) => { this.mouse = clientToScreen(e.clientX, e.clientY); };
+    this._onKey = (e) => {
+      if ((e.key === 'b' || e.key === 'B') && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) this.blink();
+    };
+    window.addEventListener('pointermove', this._onMove);
+    window.addEventListener('keydown', this._onKey);
+    this.timer = setInterval(() => this.tick(), 33);
+    setTimeout(() => {
+      this.emit('connection', { connected: true });
+      this.emit('hello', { type: 'hello', profile: null, model: true, simulated: true });
+    }, 0);
+  }
+
+  stop() {
+    this.running = false;
+    clearInterval(this.timer);
+    window.removeEventListener('pointermove', this._onMove);
+    window.removeEventListener('keydown', this._onKey);
+  }
+
+  setLabel(label) {
+    this.label = label;
+  }
+
+  tick() {
+    const id = ++this.frameId;
+    const now = performance.now();
+    const closed = now < this.closedUntil;
+    const gaze = this.mouse ? [this.mouse.x, this.mouse.y] : null;
+    const msg = {
+      type: 'frame', id, face: true, gaze, raw: gaze, frozen: closed, labeled: !!this.label && !closed,
+      closure: closed ? 0.9 : 0.12, closed, closing: closed, thr: [0.5, 0.35], fps: 30, ms: 0, head: [0, 0, 0], dist: 60,
+    };
+    this.history.push({ id, closed, t: now });
+    if (this.history.length > 90) this.history.shift();
+    this.emit('frame', msg);
+    if (this.pendingBlink && !closed && now - this.pendingBlink.end > this.blinkGapMs) {
+      this.pendingBlink = null;
+      this.emit('blink_expired', { type: 'blink_expired', frame: id });
+    }
+  }
+
+  blink() {
+    const now = performance.now();
+    const preFrame = this.frameId;
+    this.closedUntil = now + 140;
+    setTimeout(() => {
+      const end = performance.now();
+      if (this.pendingBlink && this.pendingBlink.start && now - this.pendingBlink.end <= this.blinkGapMs) {
+        const first = this.pendingBlink;
+        this.pendingBlink = null;
+        this.emit('blink', { type: 'blink', n: 2, frame: this.frameId });
+        this.emit('double_blink', { type: 'double_blink', frame: this.frameId, pre_frame: first.preFrame, at: null });
+      } else {
+        this.pendingBlink = { start: now, end, preFrame };
+        this.emit('blink', { type: 'blink', n: 1, frame: this.frameId });
+      }
+    }, 150);
+  }
+
+  send() {
+    return true;
+  }
+
+  async request(cmd, replyType) {
+    if (cmd.type === 'calibration_fit') return { type: replyType, ok: true, mode: cmd.mode, cv_error_px: 0 };
+    if (cmd.type === 'validation_finish') return { type: replyType, ok: true, mean_error_px: 0, points: [] };
+    if (cmd.type === 'profile_load') return { type: replyType, loaded: false };
+    return { type: replyType, ok: true };
+  }
+}

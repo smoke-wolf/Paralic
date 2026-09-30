@@ -1,0 +1,100 @@
+"""Command-line entry point: ``python -m paralic``."""
+
+from __future__ import annotations
+
+import argparse
+import logging
+import socket
+import sys
+import threading
+import webbrowser
+from pathlib import Path
+
+from . import __version__
+from .model_assets import ModelUnavailable, ensure_face_model
+from .server import DEFAULT_WEB_DIR, PROJECT_ROOT, create_app
+
+log = logging.getLogger("paralic")
+
+
+def _port_free(host: str, port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind((host, port))
+        except OSError:
+            return False
+    return True
+
+
+def _pick_port(host: str, preferred: int, attempts: int = 20) -> int:
+    for port in range(preferred, preferred + attempts):
+        if _port_free(host, port):
+            return port
+    raise SystemExit(f"No free port found between {preferred} and {preferred + attempts - 1}")
+
+
+def _check_tracker(model_bytes: bytes) -> None:
+    """Load MediaPipe once at startup so problems are reported immediately."""
+    from .tracker import FaceTracker
+
+    FaceTracker(model_bytes).close()
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="paralic", description="Eye-controlled website (webcam eye tracking).")
+    parser.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8000, help="port (default: 8000, next free one if busy)")
+    parser.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
+    parser.add_argument("--model", type=Path, default=PROJECT_ROOT / "models" / "face_landmarker.task",
+                        help="path of the MediaPipe face landmarker model (downloaded if missing)")
+    parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data",
+                        help="where the calibration profile is saved")
+    parser.add_argument("--verbose", action="store_true", help="debug logging")
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s", datefmt="%H:%M:%S")
+
+    tracker_factory = None
+    model_error = None
+    try:
+        model_path = ensure_face_model(args.model)
+        model_bytes = model_path.read_bytes()
+        _check_tracker(model_bytes)
+    except ModelUnavailable as exc:
+        model_error = str(exc)
+    except Exception as exc:  # e.g. MediaPipe native library problems
+        model_error = f"MediaPipe could not start: {exc}"
+        if "libEGL" in str(exc) or "libGLES" in str(exc):
+            model_error += " (on Linux install the OpenGL ES libraries: sudo apt install libegl1 libgles2)"
+    else:
+        from .tracker import FaceTracker
+
+        def tracker_factory():
+            return FaceTracker(model_bytes)
+
+    if model_error:
+        log.error(model_error)
+
+    import uvicorn
+
+    port = _pick_port(args.host, args.port)
+    app = create_app(profile_path=args.data_dir / "profile.json", web_dir=DEFAULT_WEB_DIR,
+                     tracker_factory=tracker_factory, model_error=model_error)
+
+    shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::", "::1") else args.host
+    url = f"http://{shown_host}:{port}/"
+    print(f"\n  Paralic {__version__} - eye-controlled browsing\n  Open {url} in Chrome, Edge or Firefox.\n"
+          f"  Press Ctrl+C to stop.\n", flush=True)
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        log.warning("Browsers only allow camera access on localhost or HTTPS pages.")
+    if not args.no_browser:
+        threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    try:
+        uvicorn.run(app, host=args.host, port=port, log_level="warning", ws_max_size=8 * 1024 * 1024)
+    except KeyboardInterrupt:  # pragma: no cover
+        pass
+
+
+if __name__ == "__main__":  # pragma: no cover
+    sys.exit(main())

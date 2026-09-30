@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paralic — browse with your eyes</title>
+  <meta name="description" content="A website you can navigate using only your eyes: webcam eye tracking with neural networks, double-blink to click.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath d='M4 32C12 18 22 12 32 12s20 6 28 20c-8 14-18 20-28 20S12 46 4 32z' fill='%235eead4'/%3E%3Ccircle cx='32' cy='32' r='11' fill='%230a0f1f'/%3E%3Ccircle cx='36' cy='28' r='3.5' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/styles.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="topbar" id="topbar">
+      <div class="brand" aria-hidden="true">
+        <span class="brand-mark"></span>
+        <span class="brand-name">Paralic</span>
+      </div>
+      <div id="camera-panel" class="camera-panel" hidden>
+        <div class="camera-view">
+          <video id="camera-video" playsinline muted></video>
+          <canvas id="camera-overlay"></canvas>
+          <div class="camera-status">
+            <span class="status-dot" id="status-dot"></span>
+            <span id="status-text">Starting…</span>
+          </div>
+        </div>
+        <div class="blink-meter" title="Eye closure (blink) level">
+          <div class="blink-fill" id="blink-fill"></div>
+          <div class="blink-thr" id="blink-thr"></div>
+        </div>
+      </div>
+      <nav class="nav" id="nav" aria-label="Main">
+        <button class="nav-btn" type="button" data-action="back" data-icon="back">Back</button>
+        <a class="nav-btn" href="#/home" data-route="home" data-icon="home">Home</a>
+        <a class="nav-btn" href="#/explore" data-route="explore" data-icon="planet">Explore</a>
+        <a class="nav-btn" href="#/read" data-route="read" data-icon="book">Read</a>
+        <a class="nav-btn" href="#/talk" data-route="talk" data-icon="chat">Talk</a>
+        <a class="nav-btn" href="#/practice" data-route="practice" data-icon="target">Practice</a>
+        <a class="nav-btn" href="#/settings" data-route="settings" data-icon="sliders">Settings</a>
+      </nav>
+      <button class="nav-btn pause-btn" type="button" data-action="pause" data-icon="pause" id="pause-btn">Pause</button>
+    </header>
+
+    <main id="page" class="page" tabindex="-1" aria-live="polite"></main>
+
+    <aside class="scroll-rail" id="scroll-rail" aria-label="Scroll">
+      <button class="rail-zone" type="button" data-scroll="up" aria-label="Scroll up">
+        <span class="rail-arrow"></span><span class="rail-label">Scroll up</span>
+      </button>
+      <button class="rail-zone" type="button" data-scroll="down" aria-label="Scroll down">
+        <span class="rail-arrow"></span><span class="rail-label">Scroll down</span>
+      </button>
+    </aside>
+  </div>
+
+  <div id="paused-banner" class="paused-banner" hidden>
+    <strong>Paused</strong><span>Blink twice to resume</span>
+  </div>
+
+  <div id="gaze-cursor" class="gaze-cursor" hidden aria-hidden="true">
+    <div class="gc-ring"></div>
+    <div class="gc-dot"></div>
+    <div class="gc-badge">1</div>
+  </div>
+
+  <div id="overlay-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="assertive"></div>
+  <noscript><p class="noscript">Paralic needs JavaScript to run.</p></noscript>
+</body>
+</html>

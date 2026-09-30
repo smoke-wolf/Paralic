@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Downloaded model and personal calibration data (repo root only)
+/models/
+/data/
+
+# Test downloads / artefacts
+tests/.cache/
+*.y4m
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+# Runtime dependencies. Install with:  pip install -r requirements.txt
+mediapipe>=0.10.14      # FaceLandmarker neural networks (face mesh + iris + blendshapes); pulls in OpenCV
+numpy>=1.23             # GazeNet (the personal gaze network) is written in NumPy
+fastapi>=0.110          # web server + WebSocket
+uvicorn[standard]>=0.29 # ASGI server with WebSocket support
+pillow>=9.0             # fallback JPEG decoder
