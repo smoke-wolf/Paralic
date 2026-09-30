@@ -167,8 +167,10 @@ export class GazeController extends EventTarget {
     }
     if (!this.active || this.suspended) return;
 
-    let el = entry && entry.hover;
-    if (!el || !el.isConnected || !isVisible(el)) el = this.hover;
+    // Trust what was highlighted just before the first blink (even "nothing");
+    // fall back to the current highlight only if that moment is unknown.
+    let el = entry ? entry.hover : this.hover;
+    if (el && (!el.isConnected || !isVisible(el))) el = null;
     const point = entry && entry.x !== null ? { x: entry.x, y: entry.y } : this.point;
     this.activate(el, point, entry);
   }

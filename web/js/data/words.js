@@ -1,37 +1,75 @@
 // Word list for eye-typing predictions, roughly in order of how common the
-// words are (everyday English plus words that matter in care situations).
+// words are in everyday English, plus words that matter in care situations.
+// The first matches for the letters typed so far are offered as suggestions.
 
-export const WORDS = (
-  'i you the to a and is it yes no please thank thanks help need want can what my me that ' +
-  'in of for be have not this are do on with we he she they your how now so but was at go ' +
-  'am will like just know get feel good okay ok hello hi bye water time here there when where ' +
-  'why who more some all one about up out if an or as by from them then than too very well ' +
-  'love would could should did does don\'t can\'t i\'m it\'s that\'s let\'s think see look come make ' +
-  'take give tell talk say said call back home today tomorrow tonight morning night later soon ' +
-  'again still also maybe really sorry nice great fine bad better best tired hungry thirsty cold ' +
-  'hot warm pain hurt hurts sick doctor nurse medicine bathroom toilet bed sleep rest wake chair ' +
-  'window door light lights tv music phone computer book read watch listen family friend friends ' +
-  'mom mum dad mother father wife husband son daughter brother sister baby child children people ' +
-  'person man woman name day week month year hour minute minutes second please stop start wait ' +
-  'turn move sit stand lie down open close off on left right side head eyes face mouth nose ' +
-  'arm arms hand hands leg legs back neck chest stomach feet foot skin itch itchy breathe breath ' +
-  'eat drink food coffee tea juice milk soup bread breakfast lunch dinner snack sugar salt more less ' +
-  'enough much many little big small new old long short first last next other same different ' +
-  'happy sad angry scared worried bored calm comfortable uncomfortable funny beautiful lovely ' +
-  'thank you please yes no maybe later now here there this that these those something nothing ' +
-  'everything anything someone everyone anyone nobody always never sometimes often usually ' +
-  'because until while after before during again already almost enough together alone outside ' +
-  'inside garden walk drive car bus shop shopping money work school play game games fun question ' +
-  'answer word words letter message email write send help understand remember forget believe hope ' +
-  'wish miss need needs wants use used find found keep kept put bring brought leave left lose ' +
-  'win try trying learn show showed hear heard ask asked answer done finished ready busy free ' +
-  'early late fast slow quiet loud clean dirty wet dry heavy easy hard difficult right wrong true ' +
-  'sure important possible problem idea thing things place world life house room kitchen table ' +
-  'glass cup plate spoon fork knife pillow blanket clothes shirt shoes socks hair teeth glasses ' +
-  'appointment visit visitors birthday holiday weekend monday tuesday wednesday thursday friday ' +
-  'saturday sunday january february march april may june july august september october november ' +
-  'december weather rain sun snow wind outside cold hot news story film movie song picture photo'
-).split(/\s+/).filter((w, i, all) => w && all.indexOf(w) === i);
+const COMMON = `
+i you the to a and it is yes no please thank thanks help need want can what my me that
+in of for be have not this are do on with we he she they your how now so but was at go
+am will like just know get feel good okay ok hello hi bye water time here there when where
+why who more some all one about up out if an or as by from them then than too very well
+love would could should did does don't can't i'm it's that's let's think see look come make
+take give tell talk say said call back home today tomorrow tonight morning night later soon
+him his her hers our ours their theirs its myself yourself himself herself itself ourselves themselves
+been being had has having were was doing done going gone went came coming got getting made making
+know knew known thought seen saw looked looking wanted wanting needed told asked used using put
+this these those which whose whom what whatever whenever wherever however whoever
+into onto over under after before between through during without within along across against
+around behind below above beside near far off down away again once only also still even ever
+never always often sometimes usually really quite almost enough very much many most more less
+little few several each every any some no none both either neither other another such same own
+new old good bad great small big large long short high low right left next last first early late
+young whole sure true real best better worse worst free full easy hard clear open close closed
+people person man men woman women child children baby boy girl family friend friends mom mum dad
+mother father parent parents wife husband son daughter brother sister grandma grandpa grandmother
+grandfather aunt uncle cousin neighbour neighbor doctor nurse carer caregiver teacher
+day days week weeks month months year years hour hours minute minutes second seconds moment
+time times morning afternoon evening night tonight today tomorrow yesterday weekend holiday
+monday tuesday wednesday thursday friday saturday sunday
+january february march april may june july august september october november december
+spring summer autumn fall winter weather rain raining sun sunny snow wind windy cloudy cold hot warm cool
+thing things something anything nothing everything someone anyone everyone nobody somebody
+place places way ways world life house home room rooms kitchen bathroom bedroom garden door
+window wall floor bed chair table desk sofa couch lamp light lights tv television radio music
+phone computer tablet book books paper pen letter message email picture photo photos video film movie
+car bus train taxi bike shop shopping store money work job school class lesson game games fun
+food eat eating ate drink drinking drank water tea coffee juice milk soup bread sandwich breakfast
+lunch dinner supper snack fruit apple banana orange chocolate cake ice cream sugar salt pepper meat
+chicken fish rice pasta potato potatoes vegetables salad egg eggs cheese butter hungry thirsty full
+tired sleepy sleep sleeping rest resting awake wake wakeup dream dreams nap
+happy sad angry upset scared afraid worried nervous bored calm relaxed comfortable uncomfortable
+excited proud lonely sorry glad fine great wonderful lovely beautiful funny silly strange
+pain hurt hurts hurting ache aches sore sick ill unwell dizzy nauseous itch itchy hot cold fever
+medicine medication pill pills tablet tablets appointment hospital clinic emergency ambulance
+head face eyes eye ears ear nose mouth teeth tooth tongue lips neck shoulder shoulders arm arms
+hand hands finger fingers chest back stomach tummy belly hip hips leg legs knee knees foot feet toe toes skin
+breathe breathing breath cough sneeze swallow move moving turn turning lift sit sitting stand standing
+lie lying walk walking run running fall fell push pull hold carry bring brought send sent
+open close start stop wait finish finished begin began end try trying keep kept let
+help helped helping ask answer question questions problem idea reason answer mistake
+read reading write writing typing type spell listen listening hear heard watch watching
+see seeing look looking show showed tell telling speak speaking talk talking say saying
+remember forget forgot understand believe hope wish miss mean matter mind care decide choose
+like liked love loved hate prefer enjoy want wanted need needed use used find found lose lost
+buy bought sell pay paid cost spend spent save win won play played sing dance draw paint cook clean
+wash washing shower bath toilet brush comb shave dress dressed clothes shirt trousers pants shoes
+socks jacket coat hat glasses blanket pillow towel tissue tissues cup glass plate bowl spoon fork knife
+straw bottle bag box key keys wallet charger battery remote
+up down left right forward backward inside outside upstairs downstairs here there everywhere somewhere
+yes no maybe please thanks thank okay sure alright fine sorry excuse pardon hello goodbye bye
+morning goodnight welcome congratulations happy birthday merry christmas
+number one two three four five six seven eight nine ten hundred thousand first second third half
+news story stories song songs show shows program channel team match football soccer tennis
+nature tree trees flower flowers grass bird birds dog dogs cat cats animal animals pet
+city town country village street road park beach sea river lake mountain hill field sky star stars
+planet planets moon earth space rocket
+colour color red blue green yellow black white brown pink purple orange grey gray gold silver
+important possible impossible different difficult simple special ready busy quiet loud slow fast
+quick clean dirty wet dry heavy light dark bright soft hard warm cool safe dangerous
+also because until while since unless although though whether
+high higher highest hill hills hit history hire hide hidden hiking hip hips hint hint his him himself
+`;
+
+export const WORDS = COMMON.split(/\s+/).map((w) => w.trim()).filter((w, i, all) => w && all.indexOf(w) === i);
 
 // Likely first words when nothing has been typed yet.
 export const STARTERS = ['I', 'Please', 'Can', 'Thank'];
