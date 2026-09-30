@@ -1,5 +1,5 @@
 # Runtime dependencies. Install with:  pip install -r requirements.txt
-mediapipe>=0.10.14      # FaceLandmarker neural networks (face mesh + iris + blendshapes); pulls in OpenCV
+mediapipe>=0.10.14,<1.0 # FaceLandmarker neural networks (face mesh + iris + blendshapes); pulls in OpenCV. Capped below 1.0: mediapipe 1.0.x aborts at FaceLandmarker startup (DrishtiMetalHelper "Service is unavailable").
 numpy>=1.23             # GazeNet (the personal gaze network) is written in NumPy
 fastapi>=0.110          # web server + WebSocket
 uvicorn[standard]>=0.29 # ASGI server with WebSocket support

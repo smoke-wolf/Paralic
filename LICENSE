@@ -1,0 +1,60 @@
+Paralic — Proprietary Software License
+Copyright (c) 2026 Maliq Barnard. All Rights Reserved.
+
+================================================================================
+ALL RIGHTS RESERVED
+================================================================================
+
+This software, including its source code, object code, documentation, models,
+assets, and all accompanying files (collectively, the "Software"), is the
+exclusive property of Maliq Barnard (the "Owner") and is protected by copyright
+and other intellectual property laws and treaties.
+
+NO LICENSE OR RIGHT IS GRANTED. No part of the Software may be used, copied,
+reproduced, executed, run, installed, modified, adapted, translated, merged,
+published, distributed, sublicensed, sold, leased, rented, lent, transmitted,
+displayed, performed, reverse engineered, decompiled, disassembled, or otherwise
+exploited, in whole or in part, in any form or by any means, for any purpose
+(whether commercial or non-commercial), without the prior express written
+permission of the Owner, which the Owner may grant, withhold, condition, or
+revoke in its sole and absolute discretion.
+
+Viewing the Software where it has been made available (for example, in a source
+repository) does not grant any license to use it. Any access you have to the
+Software is provided solely for reference and evaluation by the Owner's express
+invitation, and confers no other rights.
+
+PROHIBITED WITHOUT WRITTEN PERMISSION, WITHOUT LIMITATION:
+  - Running or deploying the Software, in production or otherwise.
+  - Creating derivative works, ports, or translations (including native or
+    platform-specific reimplementations).
+  - Incorporating the Software, or any portion or concept expressed in its
+    source, into any other product, service, model, or dataset.
+  - Using the Software, or any output or data derived from it, to train,
+    fine-tune, evaluate, or benchmark any machine-learning or AI system.
+  - Removing, obscuring, or altering this notice or any proprietary marking.
+
+RESERVATION. All rights not expressly granted in a signed written agreement
+with the Owner are reserved by the Owner. No rights are granted by implication,
+estoppel, or otherwise.
+
+TERMINATION. Any permission the Owner may grant terminates automatically, without
+notice, upon any breach of its terms, and upon termination you must cease all use
+and destroy all copies of the Software in your possession or control.
+
+NO WARRANTY. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+LIMITATION OF LIABILITY. TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT
+SHALL THE OWNER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN
+AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+THIRD-PARTY COMPONENTS. The Software may depend on or reference third-party
+components that are licensed separately by their respective owners (for example,
+MediaPipe under the Apache License 2.0). Nothing in this license grants rights in
+those components beyond what their own licenses provide, and nothing in those
+licenses grants any right in this Software.
+
+For licensing inquiries, contact the Owner.

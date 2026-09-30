@@ -187,6 +187,11 @@ PARALIC_FAKE_VIDEO=/tmp/face.y4m python -m pytest --runslow tests/test_browser.p
 
 The MediaPipe integration tests download a public-domain test portrait on first use and are skipped offline.
 
+## License
+
+**Proprietary — All Rights Reserved.** Copyright (c) 2026 Maliq Barnard.
+No use, copying, modification, distribution, or reverse engineering is permitted without the Owner's prior written permission. See [LICENSE](LICENSE).
+
 ## Credits
 
 * [MediaPipe](https://developers.google.com/mediapipe) Face Landmarker (Apache 2.0) for face, iris and
