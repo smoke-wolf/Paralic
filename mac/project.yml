@@ -1,0 +1,40 @@
+name: Paralic
+options:
+  bundleIdPrefix: dev.paralic
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_BUNDLE_IDENTIFIER: dev.paralic.app
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Automatic
+targets:
+  Paralic:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/Paralic
+        excludes:
+          - "Tools/**"          # the self-test has its own top-level main
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: Paralic
+        NSCameraUsageDescription: "Paralic uses the camera to track your eyes so you can control the app by looking, blinking and dwelling."
+        NSHighResolutionCapable: true
+        LSApplicationCategoryType: public.app-category.utilities
+        LSMinimumSystemVersion: "14.0"
+    entitlements:
+      path: Paralic.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.device.camera: true
+        com.apple.security.files.user-selected.read-write: true
+    frameworks:
+      - Accelerate
+      - Vision
+      - AVFoundation
