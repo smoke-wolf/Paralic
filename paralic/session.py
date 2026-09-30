@@ -46,9 +46,18 @@ log = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 8192
 
-# Reply message type for commands whose failures should reach the same handler
-# in the browser as their successes.
-_REPLY_TYPES = {"calibration_fit": "calibration_result", "validation_finish": "validation_result"}
+# Reply message type of each command, so failures reach the same handler in the
+# browser as successes (the page waits for these types).
+_REPLY_TYPES = {
+    "calibration_start": "calibration_started",
+    "calibration_fit": "calibration_result",
+    "validation_finish": "validation_result",
+    "profile_load": "profile",
+    "profile_delete": "profile",
+    "hello": "hello",
+    "settings": "settings",
+    "ping": "pong",
+}
 
 
 class FrameFormatError(ValueError):
@@ -99,6 +108,7 @@ class TrackerSession:
         self.screen: Optional[dict] = None
         self._history: deque[_FrameRecord] = deque(maxlen=150)
         self._frame_times: deque[float] = deque(maxlen=30)
+        self._tracker_errors = 0
         self.settings = {"smoothing": "medium", "blink_sensitivity": "normal", "double_blink": "normal"}
 
     # ------------------------------------------------------------------
@@ -131,7 +141,13 @@ class TrackerSession:
         except Exception as exc:  # corrupted JPEG etc.
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"decode: {exc}"}]
 
-        obs = self.tracker.process(rgb, int(t * 1000))
+        try:
+            obs = self.tracker.process(rgb, int(t * 1000))
+        except Exception as exc:  # a MediaPipe failure should not end the session
+            self._tracker_errors += 1
+            if self._tracker_errors in (1, 10) or self._tracker_errors % 500 == 0:
+                log.exception("Face tracking failed (%d times)", self._tracker_errors)
+            return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
 
@@ -226,8 +242,15 @@ class TrackerSession:
         try:
             return handler(cmd)
         except CalibrationError as exc:
-            return [{"type": _REPLY_TYPES.get(kind, f"{kind}_result"), "ok": False, "mode": cmd.get("mode"),
-                     "error": str(exc)}]
+            error = str(exc)
+        except Exception as exc:  # keep the session alive; report to the page
+            log.exception("Command %r failed", kind)
+            error = f"{type(exc).__name__}: {exc}"
+        reply = {"type": _REPLY_TYPES.get(kind, f"{kind}_result"), "ok": False, "mode": cmd.get("mode"),
+                 "error": error}
+        if reply["type"] == "profile":
+            reply["loaded"] = False
+        return [reply]
 
     def _cmd_ping(self, cmd: dict) -> list[dict]:
         return [{"type": "pong", "t": cmd.get("t")}]
@@ -320,5 +343,9 @@ class TrackerSession:
         return [{"type": "profile", "loaded": True, **meta}]
 
     def _cmd_profile_delete(self, cmd: dict) -> list[dict]:
-        self.profiles.delete()
-        return [{"type": "profile", "loaded": self.model is not None, "deleted": True}]
+        try:
+            self.profiles.delete()
+        except OSError as exc:  # e.g. the file is locked on Windows
+            return [{"type": "profile", "ok": False, "loaded": self.model is not None,
+                     "error": f"Could not delete the saved calibration: {exc}"}]
+        return [{"type": "profile", "ok": True, "loaded": self.model is not None, "deleted": True}]

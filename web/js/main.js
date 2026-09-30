@@ -150,9 +150,14 @@ class App {
       const p = await this.tracker.request({ type: 'profile_load' }, 'profile', 15000);
       if (p.loaded) toast('Reconnected', 'ok');
       else {
+        // No saved calibration to restore: ask for a new one (a double blink
+        // works without calibration, so this stays usable with the eyes).
         this.state.calibrated = false;
         this.gaze.setActive(false);
-        toast('Reconnected — please calibrate again (press C or use Settings)', 'warn', 6000);
+        toast('Reconnected — the calibration has to be redone', 'warn', 6000);
+        if (!this.overlayRoot.children.length && !this.calibrator.running) {
+          this.askToCalibrate(this.openOverlay('solid'));
+        }
       }
     } catch {
       /* next reconnect will retry */
@@ -184,13 +189,15 @@ class App {
         h('div', { class: 'start-visual' }, h('div', { class: 'start-eye' }))));
     ov.append(card);
 
-    fetch('/api/status').then((r) => r.json()).then((status) => {
-      if (status.error) {
+    const statusReady = fetch('/api/status').then((r) => r.json()).then((status) => {
+      if (status.error || !status.tracker) {
         errorBox.hidden = false;
-        errorBox.textContent = `The eye tracker could not start:\n${status.error}\n\nYou can still try the website with a mouse.`;
+        errorBox.textContent = `The eye tracker could not start:\n${status.error || 'unknown error'}\n\nYou can still try the website with a mouse.`;
         startBtn.disabled = true;
+        return false;
       }
-    }).catch(() => {});
+      return true;
+    }).catch(() => true);
 
     startBtn.addEventListener('click', () => {
       unlockAudio();
@@ -206,17 +213,19 @@ class App {
       this.startDemo(ov);
       return;
     }
-    // If the camera is already allowed, start right away (no click needed).
-    navigator.permissions?.query({ name: 'camera' }).then((p) => {
-      if (p.state === 'granted' && !this.state.started && ov.isConnected && !params.has('manual')) {
-        this.startTracking(ov, card, errorBox);
-      }
-    }).catch(() => {});
+    // If the camera is already allowed (and the tracker is OK), start right away: no click needed.
+    statusReady.then((trackerOk) => {
+      if (!trackerOk || params.has('manual')) return;
+      navigator.permissions?.query({ name: 'camera' }).then((p) => {
+        if (p.state === 'granted' && !this.state.started && ov.isConnected) this.startTracking(ov, card, errorBox);
+      }).catch(() => {});
+    });
   }
 
   async startTracking(ov, card, errorBox) {
     if (this.state.started) return;
     this.state.started = true;
+    unlockAudio();
     errorBox.hidden = true;
     if (!this.tracker || this.tracker.simulated) this.createTracker(false);
     try {
@@ -240,6 +249,7 @@ class App {
   startDemo(ov) {
     if (this.state.started) return;
     this.state.started = true;
+    unlockAudio();
     this.createTracker(true);
     this.tracker.start();
     this.state.calibrated = true;

@@ -25,28 +25,45 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent
 DEFAULT_WEB_DIR = PROJECT_ROOT / "web"
 
-_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", "[::1]"}
+LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_LOOPBACK_CLIENTS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
-def _origin_allowed(origin: Optional[str]) -> bool:
-    """Only pages served from this machine may drive the tracker."""
+def _origin_allowed(origin: Optional[str], host_header: Optional[str], client_host: Optional[str],
+                    allowed_hosts=LOCAL_HOSTS) -> bool:
+    """Decide whether a WebSocket connection may drive the tracker.
+
+    Browsers always send an Origin: it must be exactly the origin of this
+    server (same host and port as the Host header), so pages from other
+    sites or other local servers cannot connect, and its host name must be
+    one we serve under (defeats DNS-rebinding tricks). Connections without an
+    Origin (scripts, tests) are only accepted from this machine.
+    """
     if not origin:
-        return True  # non-browser clients (tests, tools) send no Origin
+        return client_host in _LOOPBACK_CLIENTS
+    if not host_header:
+        return False
     try:
-        host = urlparse(origin).hostname
+        parsed = urlparse(origin)
+        hostname = parsed.hostname
     except ValueError:
         return False
-    return host in _LOCAL_HOSTS
+    if parsed.scheme not in ("http", "https") or not hostname:
+        return False
+    if parsed.netloc.lower() != host_header.lower():
+        return False
+    return allowed_hosts == "*" or hostname.lower() in allowed_hosts
 
 
 def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
                tracker_factory: Optional[Callable[[], FaceTracker]] = None,
-               model_error: Optional[str] = None) -> FastAPI:
+               model_error: Optional[str] = None, allowed_hosts=LOCAL_HOSTS) -> FastAPI:
     """Build the application.
 
     ``tracker_factory`` creates one MediaPipe FaceTracker per connection. When
     it is None (e.g. the model could not be downloaded) the website still
-    loads and shows ``model_error``.
+    loads and shows ``model_error``. ``allowed_hosts`` lists the host names
+    the site may be opened under ("*" for any).
     """
     app = FastAPI(title="Paralic", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
     profiles = ProfileStore(profile_path)
@@ -68,7 +85,10 @@ def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
 
     @app.websocket("/ws")
     async def eye_tracking_socket(websocket: WebSocket) -> None:
-        if not _origin_allowed(websocket.headers.get("origin")):
+        client_host = websocket.client.host if websocket.client else None
+        if not _origin_allowed(websocket.headers.get("origin"), websocket.headers.get("host"), client_host,
+                               allowed_hosts):
+            log.warning("Rejected WebSocket connection from origin %r", websocket.headers.get("origin"))
             await websocket.close(code=1008)
             return
         await websocket.accept()

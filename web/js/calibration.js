@@ -199,6 +199,7 @@ export class Calibrator {
 
   // -- full calibration ---------------------------------------------------------------
   async runFull() {
+    this.cancelled = false; // an Esc pressed on a previous screen must not cancel this run
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'full' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start calibration');
 
@@ -244,6 +245,9 @@ export class Calibrator {
       return { mode: 'full', fit };
     }
     this.app.gaze.resetBias();
+    if (result.saved === false) {
+      toast('Could not save the calibration to disk — it works until you reload the page.', 'warn', 7000);
+    }
     const again = await this.showResults(result);
     if (again) return this.runFull();
     return { mode: 'full', fit, validation: result };
@@ -324,6 +328,9 @@ export class Calibrator {
     const card = h('div', { class: 'overlay-card', style: { position: 'fixed', top: '4vh', left: '50%', translate: '-50% 0', width: 'min(1100px, 92vw)' } },
       h('div', { class: 'results' }, map, summary));
     ov.append(card);
+    // The network is trained: let the gaze cursor drive this screen (on a
+    // first calibration it has never been switched on before).
+    this.app.gaze.setActive(true);
     this.app.gaze.setSuspended(false);
     const choice = await this.app.choose(ov, {
       top: false,
@@ -342,6 +349,7 @@ export class Calibrator {
 
   // -- quick adjust ------------------------------------------------------------------------
   async runAdjust() {
+    this.cancelled = false;
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'adjust' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start adjustment');
     this.say('Quick adjustment', 'Look at each dot as it appears.');

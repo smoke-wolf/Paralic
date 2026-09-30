@@ -4,18 +4,30 @@ import { getSettings } from './settings.js';
 
 let ctx = null;
 
-/** Must be called from a real user gesture once (browsers block audio otherwise). */
+/**
+ * Create / resume the audio context. Browsers only let audio start after a
+ * real click or key press, so this is also called on the first interaction;
+ * until then sounds are simply skipped.
+ */
 export function unlockAudio() {
   try {
     ctx = ctx || new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === 'suspended') ctx.resume();
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
   } catch {
     ctx = null;
   }
 }
 
+for (const type of ['pointerdown', 'keydown']) {
+  window.addEventListener(type, unlockAudio, { capture: true, passive: true });
+}
+
 function tone(freq, duration, { type = 'sine', gain = 0.06, endFreq = null, delay = 0 } = {}) {
-  if (!ctx || !getSettings().sounds) return;
+  if (!getSettings().sounds) return;
+  if (!ctx || ctx.state !== 'running') {
+    unlockAudio(); // try again; don't queue sounds on a suspended context
+    return;
+  }
   const t0 = ctx.currentTime + delay;
   const osc = ctx.createOscillator();
   const g = ctx.createGain();

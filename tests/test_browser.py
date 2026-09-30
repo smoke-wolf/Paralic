@@ -240,6 +240,10 @@ def test_camera_flow(browser, tmp_path):
         pg.wait_for_selector("text=Blink twice to calibrate", timeout=30000)
         pg.wait_for_selector(".calib-dot", timeout=20000)          # started by the video's double blink
         pg.wait_for_selector(".results", timeout=120000)
+        # The results screen must be usable with the eyes: gaze cursor on and live.
+        pg.wait_for_timeout(800)
+        assert pg.evaluate("window.paralic.gaze.active && !window.paralic.gaze.suspended")
+        assert pg.evaluate("!document.querySelector('#gaze-cursor').hidden")
         pg.click('[data-choice="go"]')
         pg.wait_for_timeout(1500)
         assert pg.evaluate("!document.querySelector('#gaze-cursor').hidden")

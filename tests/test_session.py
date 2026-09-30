@@ -177,3 +177,25 @@ def test_close_closes_tracker(env):
     frame()
     session.close()
     assert tracker.closed
+
+
+def test_tracker_failure_is_reported_per_frame(env):
+    session, tracker, _, frame, _ = env
+
+    def broken(rgb, ts):
+        raise RuntimeError("graph error")
+
+    tracker.process = broken
+    msg = session.handle_frame(pack_frame({"id": 99}, JPEG))[0]
+    assert msg["type"] == "frame" and msg["id"] == 99 and msg["face"] is False and "graph error" in msg["error"]
+
+
+def test_profile_delete_reports_os_errors(env, monkeypatch):
+    session, *_ = env
+
+    def locked():
+        raise PermissionError("file in use")
+
+    monkeypatch.setattr(session.profiles, "delete", locked)
+    reply = session.handle_command({"type": "profile_delete"})[0]
+    assert reply["type"] == "profile" and reply["ok"] is False and "file in use" in reply["error"]

@@ -76,7 +76,8 @@ export default {
         actionBtn('Full calibration', 'refresh', () => app.calibrate('full')),
         actionBtn('Forget calibration', 'trash', async () => {
           try {
-            await app.tracker.request({ type: 'profile_delete' }, 'profile', 5000);
+            const res = await app.tracker.request({ type: 'profile_delete' }, 'profile', 5000);
+            if (res.ok === false) throw new Error(res.error || 'unknown error');
             toast('Saved calibration deleted. It stays active until you close the page.', 'ok', 5000);
           } catch (err) {
             toast(`Could not delete: ${err.message}`, 'bad');

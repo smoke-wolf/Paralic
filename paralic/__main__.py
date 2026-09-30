@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import socket
 import sys
 import threading
@@ -18,11 +19,19 @@ log = logging.getLogger("paralic")
 
 
 def _port_free(host: str, port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        try:
-            s.bind((host, port))
-        except OSError:
-            return False
+    """True if every address ``host`` resolves to (IPv4 and/or IPv6) can bind ``port``."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise SystemExit(f"Cannot use host {host!r}: {exc}") from None
+    for family, socktype, proto, _, addr in infos:
+        with socket.socket(family, socktype, proto) as s:
+            if os.name != "nt":  # match uvicorn, which reuses ports left in TIME_WAIT
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(addr)
+            except OSError:
+                return False
     return True
 
 
@@ -31,6 +40,15 @@ def _pick_port(host: str, preferred: int, attempts: int = 20) -> int:
         if _port_free(host, port):
             return port
     raise SystemExit(f"No free port found between {preferred} and {preferred + attempts - 1}")
+
+
+def _allowed_hosts(host: str):
+    """Host names pages may be served from (see server._origin_allowed)."""
+    if host in ("0.0.0.0", "::", ""):
+        return "*"  # listening on every interface: any address of this machine
+    names = {"localhost", "127.0.0.1", "::1"}
+    names.add(host.strip("[]").lower())
+    return names
 
 
 def _check_tracker(model_bytes: bytes) -> None:
@@ -80,7 +98,8 @@ def main(argv: list[str] | None = None) -> None:
 
     port = _pick_port(args.host, args.port)
     app = create_app(profile_path=args.data_dir / "profile.json", web_dir=DEFAULT_WEB_DIR,
-                     tracker_factory=tracker_factory, model_error=model_error)
+                     tracker_factory=tracker_factory, model_error=model_error,
+                     allowed_hosts=_allowed_hosts(args.host))
 
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::", "::1") else args.host
     url = f"http://{shown_host}:{port}/"
