@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--model", type=Path, default=PROJECT_ROOT / "models" / "face_landmarker.task",
                         help="path of the MediaPipe face landmarker model (downloaded if missing)")
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data",
-                        help="where the calibration profile is saved")
+                        help="where each person's calibration and personal settings are saved")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     args = parser.parse_args(argv)
 
@@ -97,7 +97,7 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
     port = _pick_port(args.host, args.port)
-    app = create_app(profile_path=args.data_dir / "profile.json", web_dir=DEFAULT_WEB_DIR,
+    app = create_app(data_dir=args.data_dir, web_dir=DEFAULT_WEB_DIR,
                      tracker_factory=tracker_factory, model_error=model_error,
                      allowed_hosts=_allowed_hosts(args.host))
 

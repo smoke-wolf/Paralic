@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from paralic.calibration import ProfileStore
+from paralic.users import UserStore
 from paralic.features import extract_features
 from paralic.session import TrackerSession, pack_frame
 from tests import face_images
@@ -96,7 +96,7 @@ def test_end_to_end_calibration_with_synthetic_gaze(model_bytes, face, tmp_path)
         noisy = np.clip(cache[fx].astype(np.int16) + rng.normal(0, 2, cache[fx].shape), 0, 255).astype(np.uint8)
         return cv2.imencode(".jpg", noisy, [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes()
 
-    session = TrackerSession(lambda: FaceTracker(model_bytes), ProfileStore(tmp_path / "p.json"))
+    session = TrackerSession(lambda: FaceTracker(model_bytes), UserStore(tmp_path))
     try:
         session.handle_command({"type": "calibration_start"})
         fid = 0

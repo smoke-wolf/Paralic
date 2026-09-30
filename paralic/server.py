@@ -15,9 +15,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .calibration import ProfileStore
 from .session import TrackerSession
 from .tracker import FaceTracker
+from .users import UserStore
 
 log = logging.getLogger(__name__)
 
@@ -55,18 +55,26 @@ def _origin_allowed(origin: Optional[str], host_header: Optional[str], client_ho
     return allowed_hosts == "*" or hostname.lower() in allowed_hosts
 
 
-def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
+def _unavailable(error: Optional[str]) -> Callable[[], FaceTracker]:
+    def factory() -> FaceTracker:
+        raise RuntimeError(error or "Eye tracker unavailable")
+    return factory
+
+
+def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
                tracker_factory: Optional[Callable[[], FaceTracker]] = None,
                model_error: Optional[str] = None, allowed_hosts=LOCAL_HOSTS) -> FastAPI:
     """Build the application.
 
+    ``data_dir`` holds everyone's profiles (see ``users.py``).
     ``tracker_factory`` creates one MediaPipe FaceTracker per connection. When
     it is None (e.g. the model could not be downloaded) the website still
-    loads and shows ``model_error``. ``allowed_hosts`` lists the host names
-    the site may be opened under ("*" for any).
+    loads, shows ``model_error`` and works in mouse demo mode.
+    ``allowed_hosts`` lists the host names the site may be opened under ("*"
+    for any).
     """
     app = FastAPI(title="Paralic", version=__version__, docs_url=None, redoc_url=None, openapi_url=None)
-    profiles = ProfileStore(profile_path)
+    users = UserStore(Path(data_dir))
 
     @app.middleware("http")
     async def no_cache(request, call_next):
@@ -76,11 +84,13 @@ def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
 
     @app.get("/api/status")
     async def status() -> JSONResponse:
+        active = users.active_id()
         return JSONResponse({
             "version": __version__,
             "tracker": tracker_factory is not None,
             "error": model_error,
-            "profile": profiles.summary(),
+            "profile": users.profile_store(active).summary() if active else None,
+            "users": len(users.list()),
         })
 
     @app.websocket("/ws")
@@ -92,17 +102,34 @@ def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
             await websocket.close(code=1008)
             return
         await websocket.accept()
-        if tracker_factory is None:
-            await websocket.send_text(json.dumps({"type": "fatal", "error": model_error or "Eye tracker unavailable"}))
-            await websocket.close()
-            return
 
         loop = asyncio.get_running_loop()
+        outbox: asyncio.Queue = asyncio.Queue()
+
+        async def sender() -> None:
+            # The only task that writes to the socket (replies and pushed results).
+            while True:
+                msg = await outbox.get()
+                if msg is None:
+                    return
+                await websocket.send_text(json.dumps(msg))
+
+        def push(msg: dict) -> None:  # called from background threads
+            try:
+                loop.call_soon_threadsafe(outbox.put_nowait, msg)
+            except RuntimeError:  # the server is shutting down
+                pass
+
+        if tracker_factory is None:
+            # No face tracking, but keep the connection for people / lab commands (demo mode).
+            outbox.put_nowait({"type": "fatal", "error": model_error or "Eye tracker unavailable"})
+        factory = tracker_factory or _unavailable(model_error)
         # One worker thread per connection keeps MediaPipe calls ordered.
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paralic-session")
-        session = TrackerSession(tracker_factory, profiles)
+        session = await loop.run_in_executor(executor, lambda: TrackerSession(factory, users, push=push))
+        send_task = asyncio.create_task(sender())
         try:
-            while True:
+            while not send_task.done():
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     break
@@ -123,17 +150,18 @@ def create_app(*, profile_path: Path, web_dir: Path = DEFAULT_WEB_DIR,
                         else:
                             replies = await loop.run_in_executor(executor, session.handle_command, cmd)
                 for reply in replies:
-                    await websocket.send_text(json.dumps(reply))
+                    outbox.put_nowait(reply)
         except WebSocketDisconnect:
             pass
         except Exception as exc:  # keep the server alive, report to the page
             log.exception("Eye-tracking session failed")
-            try:
-                await websocket.send_text(json.dumps({"type": "fatal", "error": f"Tracker error: {exc}"}))
-                await websocket.close()
-            except Exception:
-                pass
+            outbox.put_nowait({"type": "fatal", "error": f"Tracker error: {exc}"})
         finally:
+            outbox.put_nowait(None)
+            try:
+                await asyncio.wait_for(send_task, timeout=2.0)
+            except Exception:
+                send_task.cancel()
             await loop.run_in_executor(executor, session.close)
             executor.shutdown(wait=False)
 

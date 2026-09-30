@@ -2,12 +2,13 @@
 // check, calibration, pause, navigation).
 
 import { $, $$, h, toast } from './dom.js';
+import { clientToScreen } from './screen-space.js';
 import { icon } from './icons.js';
 import { EyeTracker, SimTracker } from './tracker.js';
 import { GazeController } from './gaze.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
 import { CameraPanel } from './camera-panel.js';
-import { getSettings, onSettingsChange, serverSettings } from './settings.js';
+import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
 import { unlockAudio } from './sound.js';
 import { Router } from './router.js';
 
@@ -19,6 +20,7 @@ import practice from './pages/practice.js';
 import settingsPage from './pages/settings.js';
 import help from './pages/help.js';
 
+// The Personalization Lab page ('lab') is still being built and is not routed yet.
 const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help };
 const params = new URLSearchParams(location.search);
 
@@ -31,7 +33,10 @@ class App {
     this.tracker = null;
     this.gaze = null;
     this.camera = null;
-    this.state = { started: false, calibrated: false, accuracy: null, simulated: false, profile: null };
+    this.state = {
+      started: false, calibrated: false, accuracy: null, simulated: false, profile: null,
+      person: null, people: [], personal: null,
+    };
 
     this.decorateNav();
     this.router = new Router(this.pageEl, ROUTES, this);
@@ -88,6 +93,95 @@ class App {
     });
   }
 
+  /**
+   * Scanning choice: the options light up one after another and a double blink
+   * picks the lit one. Works before any calibration (e.g. choosing who you are).
+   */
+  scanChoose(container, { title, subtitle, choices, dwellMs = 1800 } = {}) {
+    return new Promise((resolve) => {
+      const wrap = h('div', { class: 'choice-wrap scan' });
+      if (title) wrap.append(h('div', { class: 'choice-title' }, h('h2', {}, title), subtitle ? h('p', {}, subtitle) : null));
+      const grid = h('div', { class: 'scan-grid' });
+      const buttons = choices.map((c) => {
+        const b = h('button', { class: 'choice', type: 'button', 'data-choice': c.id });
+        b.innerHTML = `${icon(c.icon || 'head')}<span>${c.label}</span>${c.sub ? `<small>${c.sub}</small>` : ''}`;
+        b.addEventListener('click', () => finish(c.id));
+        grid.append(b);
+        return b;
+      });
+      wrap.append(grid);
+      container.append(wrap);
+      let index = 0;
+      const light = () => buttons.forEach((b, i) => b.classList.toggle('scan-focus', i === index));
+      light();
+      const timer = setInterval(() => { index = (index + 1) % buttons.length; light(); }, dwellMs);
+      const wasSuspended = this.gaze ? this.gaze.suspended : false;
+      if (this.gaze) this.gaze.setSuspended(true);
+      const off = this.gaze ? this.gaze.onDoubleBlinkFirst(() => { finish(choices[index].id); return true; }) : () => {};
+      let done = false;
+      function finish(id) {
+        if (done) return;
+        done = true;
+        clearInterval(timer);
+        off();
+        wrap.remove();
+        resolve(id);
+      }
+      this._afterScan = () => { if (this.gaze) this.gaze.setSuspended(wasSuspended); };
+    }).finally(() => this._afterScan && this._afterScan());
+  }
+
+  // -- people & personalisation ----------------------------------------------------------
+  setPersonal(view) {
+    if (!view) return;
+    this.state.personal = view;
+    if (this.gaze) this.gaze.personalMagnet = view.magnet || null;
+    this.emit('personal', view);
+  }
+
+  applyUsersReply(reply) {
+    if (!reply || reply.ok === false) return;
+    this.state.people = reply.users || [];
+    this.state.person = reply.user || null;
+    this.state.profile = reply.profile || null;
+    this.setPersonal(reply.personal);
+    this.emit('people', reply);
+  }
+
+  /** Ask who is using Paralic (scanning, so it works before calibration). */
+  async pickPerson(ov) {
+    const people = this.state.people || [];
+    const choices = people.map((u) => ({
+      id: u.id, label: u.name, icon: 'head',
+      sub: u.calibrated ? 'Calibrated' : 'Not calibrated yet',
+    }));
+    choices.push({ id: '__new', label: 'New person', sub: 'Start a fresh profile', icon: 'sparkle' });
+    const id = await this.scanChoose(ov, {
+      title: 'Who’s using Paralic?',
+      subtitle: 'Blink twice when your name lights up (or click it).',
+      choices,
+    });
+    const reply = id === '__new'
+      ? await this.tracker.request({ type: 'user_create' }, 'users')
+      : await this.tracker.request({ type: 'user_select', id }, 'users');
+    this.applyUsersReply(reply);
+    this.state.calibrated = false;
+    this.state.accuracy = null;
+    if (this.gaze) {
+      this.gaze.setActive(false);
+      this.gaze.resetBias();
+    }
+    return reply;
+  }
+
+  /** Switch person from anywhere (Home, Lab): pick, then load or calibrate. */
+  async switchPerson() {
+    if (!this.tracker || this.calibrator.running) return;
+    const ov = this.openOverlay('solid');
+    await this.pickPerson(ov);
+    await this.enterAsPerson(ov);
+  }
+
   // -- chrome: nav, pause, keyboard ---------------------------------------------------
   decorateNav() {
     for (const el of $$('.nav-btn[data-icon]')) {
@@ -141,7 +235,42 @@ class App {
     this.tracker.on('hello', (m) => {
       this.state.hello = m;
       this.state.profile = m.profile || null;
+      this.state.people = m.users || [];
+      this.state.person = m.user || null;
+      this.setPersonal(m.personal);
     });
+    this.tracker.on('users', (m) => this.applyUsersReply(m));
+    for (const type of ['profile', 'validation_result', 'calibration_result', 'blink_calibration_result',
+      'experiment_result', 'personal', 'experiment_plan']) {
+      this.tracker.on(type, (m) => m && m.personal && this.setPersonal(m.personal));
+    }
+    this.tracker.on('finetune_result', (m) => {
+      if (m.personal) this.setPersonal(m.personal);
+      if (m.ok && m.accepted) {
+        this.gaze.resetBias(); // the new network already includes the correction
+        toast(`Your gaze model improved: ${Math.round(m.champion_error_px)} → ${Math.round(m.candidate_errors_px[m.winner])} px (v${m.version})`, 'ok', 6000);
+      } else if (!m.auto) {
+        toast(m.ok ? 'Fine-tuning finished: the current model is still the best' : (m.error || 'Fine-tuning failed'), m.ok ? '' : 'warn', 6000);
+      }
+      this.emit('finetune', m);
+    });
+    // Learn from clicks: the frames before each double-blink click are training data.
+    this.gaze.addEventListener('activate', (e) => this.learnFromActivation(e.detail));
+  }
+
+  learnFromActivation({ element, preFrame }) {
+    if (!element || preFrame === null || preFrame === undefined || this.state.simulated) return;
+    if (!getSettings().learning || !this.state.calibrated) return;
+    if (element.closest('.scroll-rail, .choice-row, .scan-grid, [data-no-learn]')) return;
+    const r = element.getBoundingClientRect();
+    const a = clientToScreen(r.left, r.top);
+    const b = clientToScreen(r.right, r.bottom);
+    if (element.dataset.learn === 'practice') {
+      this.tracker.send({ type: 'label_event', kind: 'practice', pre_frame: preFrame,
+        target: [(a.x + b.x) / 2, (a.y + b.y) / 2] });
+    } else {
+      this.tracker.send({ type: 'label_event', kind: 'click', pre_frame: preFrame, rect: [a.x, a.y, b.x, b.y] });
+    }
   }
 
   async reloadProfileAfterReconnect() {
@@ -314,28 +443,42 @@ class App {
     card.remove();
     this.camera.setVisible(getSettings().showCamera);
 
-    if (hello && hello.profile) {
+    // Several people use this computer: ask who it is first.
+    if ((this.state.people || []).length > 1) await this.pickPerson(ov);
+    await this.enterAsPerson(ov);
+  }
+
+  /** Load the current person's calibration and offer to use, adjust or redo it. */
+  async enterAsPerson(ov) {
+    for (;;) {
       const p = await this.tracker.request({ type: 'profile_load' }, 'profile', 15000).catch(() => ({ loaded: false }));
-      if (p.loaded) {
-        this.state.calibrated = true;
-        this.state.accuracy = p.accuracy_px || null;
-        this.gaze.setActive(true);
-        const choice = await this.choose(ov, {
-          title: 'Welcome back!',
-          subtitle: 'Your saved calibration is loaded. Look at an option and blink twice.',
-          choices: [
-            { id: 'browse', label: 'Start browsing', sub: 'Use the saved calibration as is', icon: 'arrowRight' },
-            { id: 'adjust', label: 'Quick adjust', sub: '5 dots, about 8 seconds (recommended)', icon: 'crosshair', primary: true },
-            { id: 'full', label: 'Full calibration', sub: 'About 30 seconds', icon: 'refresh' },
-          ],
-        });
-        this.closeOverlay(ov);
-        if (choice !== 'browse') await this.calibrate(choice);
-        this.welcome();
+      if (!p.loaded) {
+        await this.askToCalibrate(ov);
         return;
       }
+      this.state.calibrated = true;
+      this.state.accuracy = p.accuracy_px || null;
+      this.gaze.setActive(true);
+      const name = this.state.person ? this.state.person.name : '';
+      const choice = await this.choose(ov, {
+        title: name ? `Welcome back, ${name}!` : 'Welcome back!',
+        subtitle: 'Your saved calibration is loaded. Look at an option and blink twice.',
+        choices: [
+          { id: 'browse', label: 'Start browsing', sub: 'Use the saved calibration as is', icon: 'arrowRight' },
+          { id: 'adjust', label: 'Quick adjust', sub: '5 dots, about 8 seconds (recommended)', icon: 'crosshair', primary: true },
+          { id: 'full', label: 'Full calibration', sub: 'About 40 seconds', icon: 'refresh' },
+          { id: 'switch', label: 'Switch person', sub: 'Someone else is using Paralic', icon: 'head' },
+        ],
+      });
+      if (choice === 'switch') {
+        await this.pickPerson(ov);
+        continue;
+      }
+      this.closeOverlay(ov);
+      if (choice !== 'browse') await this.calibrate(choice);
+      this.welcome();
+      return;
     }
-    await this.askToCalibrate(ov);
   }
 
   /** First-time calibration prompt; a double blink works before calibration. */
@@ -346,16 +489,19 @@ class App {
     btn.innerHTML = `${icon('crosshair')}<span>Start calibration</span>`;
     const feedback = h('span', { class: 'pill', style: { fontSize: '1rem', padding: '10px 18px' } },
       'Waiting for two quick blinks…');
+    const name = this.state.person ? this.state.person.name : null;
+    const switchBtn = h('button', { class: 'btn', type: 'button' });
+    switchBtn.innerHTML = `${icon('head')}<span>${name ? `Not ${name}?` : 'Switch person'}</span>`;
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'face-check' },
         preview.el,
         h('div', {},
-          h('div', { class: 'eyebrow' }, 'One more step'),
+          h('div', { class: 'eyebrow' }, name ? `One more step, ${name}` : 'One more step'),
           h('h1', {}, 'Blink twice to calibrate'),
           h('p', { class: 'muted', style: { fontSize: '1.15rem' } },
-            'A dot will move around the screen. Follow it with your eyes — it takes about 30 seconds and teaches the neural network how your eyes look at your screen.'),
+            'A dot will move around the screen. Follow it with your eyes — it takes about 40 seconds and teaches the neural network how your eyes look at your screen, and how you blink.'),
           h('p', {}, feedback),
-          btn)));
+          h('div', { class: 'btn-row' }, btn, (this.state.people || []).length > 0 ? switchBtn : null))));
     ov.append(card);
     const offBlink = this.tracker.on('blink', (m) => {
       if (m.n === 1) {
@@ -367,20 +513,30 @@ class App {
       feedback.textContent = 'Almost! Blink twice a little faster';
       feedback.className = 'pill warn';
     });
-    await new Promise((resolve) => {
+    const action = await new Promise((resolve) => {
       const off = this.gaze.onDoubleBlinkFirst(() => {
         off();
-        resolve();
+        resolve('calibrate');
         return true;
       });
       btn.addEventListener('click', () => {
         off();
-        resolve();
+        resolve('calibrate');
+      });
+      switchBtn.addEventListener('click', () => {
+        off();
+        resolve('switch');
       });
     });
     offBlink();
     offExpired();
     preview.remove();
+    if (action === 'switch') {
+      card.remove();
+      await this.pickPerson(ov);
+      await this.enterAsPerson(ov);
+      return;
+    }
     this.closeOverlay(ov);
     const result = await this.calibrate('full');
     if (!result && !this.state.calibrated) {
@@ -402,6 +558,14 @@ class App {
       return null;
     }
     if (mode === 'adjust' && !this.state.calibrated) mode = 'full';
+    if (mode === 'blink') {
+      try {
+        return await this.calibrator.run('blink');
+      } catch (err) {
+        toast(`Blink personalisation failed: ${err.message || err}`, 'bad', 6000);
+        return null;
+      }
+    }
     const wasPaused = this.gaze.paused;
     if (wasPaused) this.gaze.setPaused(false);
     let result = null;
@@ -415,9 +579,15 @@ class App {
       this.state.calibrated = true;
       if (result.validation) this.state.accuracy = result.validation.mean_error_px;
       this.gaze.setActive(true);
+      this.gaze.resetBias();
       this.emit('calibrated', result);
     }
     return result;
+  }
+
+  /** Apply the client-side part of an adopted A/B winner (e.g. switch to "auto"). */
+  adoptSettings(patch) {
+    if (patch && typeof patch === 'object') updateSettings(patch);
   }
 
   accuracyLabel() {

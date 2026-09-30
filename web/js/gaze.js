@@ -50,6 +50,8 @@ export class GazeController extends EventTarget {
     this.bias = { x: 0, y: 0 };
     this.history = new Map();
     this.doubleBlinkHandlers = [];
+    this.personalMagnet = null;  // {radius_px, pull} learned for the current person
+    this.magnetOverride = null;  // set temporarily by an A/B experiment round
     this._lastT = performance.now();
     this._armTimer = null;
 
@@ -172,14 +174,14 @@ export class GazeController extends EventTarget {
     let el = entry ? entry.hover : this.hover;
     if (el && (!el.isConnected || !isVisible(el))) el = null;
     const point = entry && entry.x !== null ? { x: entry.x, y: entry.y } : this.point;
-    this.activate(el, point, entry);
+    this.activate(el, point, entry, msg.pre_frame ?? null);
   }
 
   /** Perform a gaze click on `el` (or report a miss at `point`). */
-  activate(el, point, entry = null) {
+  activate(el, point, entry = null, preFrame = null) {
     const at = el ? centerOf(el.getBoundingClientRect()) : point;
     if (at) this.ripple(at);
-    this.dispatchEvent(new CustomEvent('activate', { detail: { element: el || null, point } }));
+    this.dispatchEvent(new CustomEvent('activate', { detail: { element: el || null, point, preFrame } }));
     if (!el) {
       sounds.miss();
       return;
@@ -251,7 +253,7 @@ export class GazeController extends EventTarget {
 
     // Magnetism: pull the drawn cursor towards the hovered element.
     let d = p;
-    const snap = SNAP[s.snap] || SNAP.normal;
+    const snap = this.snapSettings(s);
     if (this.hover && snap.pull > 0) {
       const c = centerOf(this.hover.getBoundingClientRect());
       d = { x: p.x + (c.x - p.x) * snap.pull, y: p.y + (c.y - p.y) * snap.pull };
@@ -271,8 +273,7 @@ export class GazeController extends EventTarget {
   }
 
   updateHover(p, s, now) {
-    const snap = SNAP[s.snap] || SNAP.normal;
-    const radius = snap.radius * Math.hypot(window.innerWidth, window.innerHeight);
+    const radius = this.snapSettings(s).radiusPx;
     let best = null;
     let bestDist = Infinity;
     let bestArea = Infinity;
@@ -307,6 +308,15 @@ export class GazeController extends EventTarget {
         if (this.armed) best.classList.add('gaze-armed');
       }
     }
+  }
+
+  /** Magnet radius (px) and pull: experiment override > personal ("auto") > preset. */
+  snapSettings(s) {
+    const diag = Math.hypot(window.innerWidth, window.innerHeight);
+    const m = this.magnetOverride || (s.snap === 'auto' ? this.personalMagnet : null);
+    if (m) return { radiusPx: Number(m.radius_px) || 0, pull: Number(m.pull) || 0 };
+    const preset = SNAP[s.snap] || SNAP.normal;
+    return { radiusPx: preset.radius * diag, pull: preset.pull };
   }
 
   clearHover() {

@@ -11,8 +11,16 @@ Every browser tab that connects to the WebSocket gets its own
 6. smooths it and freezes it through blinks,
 7. stores the frame as a calibration sample if the browser labelled it.
 
-All methods are synchronous and are called from one worker thread per
-connection (see ``server.py``), so no locking is needed.
+A session belongs to one *person* (see ``users.py``) and applies their
+personal settings: blink thresholds, cursor smoothing and button magnet
+learned from their calibration and A/B experiments. While they use the site,
+the frames just before each practice-target hit or click become labelled
+fine-tuning samples; a background job periodically trains challenger networks
+on them and keeps whichever model predicts this person's recent gaze best.
+
+Frames and commands are handled on one worker thread per connection (see
+``server.py``); background jobs publish their results under ``_lock`` and
+notify the page through ``push``.
 
 Wire format of a frame message (binary WebSocket message)::
 
@@ -27,6 +35,7 @@ from __future__ import annotations
 import json
 import logging
 import struct
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -34,17 +43,27 @@ from typing import Any, Callable, Optional
 
 import numpy as np
 
-from .blink import (BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDetector, BlinkEvent)
-from .calibration import (KINDS, CalibrationData, CalibrationError, LabeledFrame, ProfileStore,
-                          evaluate_validation, fit_adjustment, fit_full_calibration)
+from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDetector, BlinkEvent
+from .calibration import (CalibrationData, CalibrationError, LabeledFrame, ProfileStore, evaluate_validation,
+                          fit_adjustment, fit_full_calibration)
 from .features import extract_features, overlay_points
-from .filters import SMOOTHING_PRESETS, GazeStabilizer
-from .gazenet import GazeNet
+from .filters import GazeStabilizer
+from .gazenet import GazeNet, ModelConfig
+from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, PersonalizationError, analyze_blinks,
+                          analyze_experiment, experiment_arms, recommend_magnet, run_finetune, smoothing_params,
+                          tune_smoothing)
 from .tracker import FaceTracker, decode_image
+from .users import UnknownUser, UserStore
 
 log = logging.getLogger(__name__)
 
 MAX_HEADER_BYTES = 8192
+AUTO_FINETUNE_EVENTS = 15        # new labelled events before an automatic fine-tune
+AUTO_FINETUNE_MIN_GAP_S = 90.0
+SAVE_EVERY_EVENTS = 10
+LABEL_WINDOW_S = 0.45            # frames before the first blink that describe the fixation
+FIXATION_RADIUS_PX = 160.0       # ...and whose gaze estimate stayed near the final one
+MAX_BLINK_RECORDING = 30 * 40    # frames
 
 # Reply message type of each command, so failures reach the same handler in the
 # browser as successes (the page waits for these types).
@@ -57,6 +76,20 @@ _REPLY_TYPES = {
     "hello": "hello",
     "settings": "settings",
     "ping": "pong",
+    "users": "users",
+    "user_select": "users",
+    "user_create": "users",
+    "user_rename": "users",
+    "user_delete": "users",
+    "label_event": "label_stored",
+    "blink_calibration_start": "blink_calibration_started",
+    "blink_calibration_finish": "blink_calibration_result",
+    "finetune": "finetune_started",
+    "experiment_plan": "experiment_plan",
+    "experiment_log": "experiment_result",
+    "experiment_reset": "experiment_plan",
+    "personal_get": "personal",
+    "personal_reset": "personal",
 }
 
 
@@ -86,30 +119,51 @@ def _xy(v: Optional[np.ndarray]) -> Optional[list[float]]:
     return None if v is None else [round(float(v[0]), 1), round(float(v[1]), 1)]
 
 
+def _now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 @dataclass
 class _FrameRecord:
     t: float
     frame_id: int
     closing: bool
     gaze: Optional[np.ndarray]
+    features: Optional[np.ndarray] = None
+    raw: Optional[np.ndarray] = None
+    wall: float = 0.0
 
 
 class TrackerSession:
-    def __init__(self, tracker_factory: Callable[[], FaceTracker], profiles: ProfileStore,
-                 clock: Callable[[], float] = time.monotonic):
+    def __init__(self, tracker_factory: Callable[[], FaceTracker], users: UserStore,
+                 clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
+                 push: Optional[Callable[[dict], None]] = None):
         self._tracker_factory = tracker_factory
         self._tracker: Optional[FaceTracker] = None
-        self.profiles = profiles
+        self.users = users
         self.clock = clock
+        self.wall = wall
+        self._push = push or (lambda msg: None)
+        self._lock = threading.RLock()
         self.blink = BlinkDetector()
-        self.stabilizer = GazeStabilizer(SMOOTHING_PRESETS["medium"])
+        self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
         self.screen: Optional[dict] = None
+        self.profile_meta: dict = {}
         self._history: deque[_FrameRecord] = deque(maxlen=150)
         self._frame_times: deque[float] = deque(maxlen=30)
         self._tracker_errors = 0
-        self.settings = {"smoothing": "medium", "blink_sensitivity": "normal", "double_blink": "normal"}
+        self._blink_recording: Optional[list[tuple[float, float]]] = None
+        self._job: Optional[threading.Thread] = None
+        self._last_job_at = 0.0
+        self._unsaved_events = 0
+        self._overrides: dict = {}
+        self.settings = {"smoothing": "auto", "blink_sensitivity": "personal", "double_blink": "personal",
+                         "learning": True}
+        self.user = users.ensure_active()
+        self.personal = users.load_personal(self.user["id"])
+        self._apply_effective()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -120,15 +174,124 @@ class TrackerSession:
             self._tracker = self._tracker_factory()
         return self._tracker
 
+    @property
+    def profiles(self) -> ProfileStore:
+        return self.users.profile_store(self.user["id"])
+
     def close(self) -> None:
-        if self._tracker is not None:
-            self._tracker.close()
-            self._tracker = None
+        with self._lock:
+            self._save_if_dirty()
+            if self._tracker is not None:
+                self._tracker.close()
+                self._tracker = None
+
+    # ------------------------------------------------------------------
+    # Personal settings
+    # ------------------------------------------------------------------
+    def effective(self) -> dict:
+        """The settings in force now: personal values, presets and experiment overrides."""
+        p = self.personal
+        sm = p.get("smoothing") or {}
+        auto_level = float(np.clip(float(sm.get("tuned_level", SMOOTHING_LEVELS["medium"]))
+                                   + float(sm.get("bias", 0.0)), 0.0, 10.0))
+        choice = self.settings["smoothing"]
+        level = auto_level if choice == "auto" else SMOOTHING_LEVELS.get(choice, SMOOTHING_LEVELS["medium"])
+        level = float(self._overrides.get("smoothing_level", level))
+
+        blink = p.get("blink") or {}
+        personal_blink = self.settings["blink_sensitivity"] == "personal" and "sensitivity" in blink
+        sensitivity = (float(blink["sensitivity"]) if personal_blink
+                       else BLINK_SENSITIVITY_PRESETS.get(self.settings["blink_sensitivity"], 0.30))
+        if self.settings["double_blink"] == "personal":
+            gap = float(blink.get("double_gap_ms", DOUBLE_BLINK_GAP_PRESETS["normal"])) + float(blink.get("gap_bias_ms", 0))
+        else:
+            gap = DOUBLE_BLINK_GAP_PRESETS.get(self.settings["double_blink"], DOUBLE_BLINK_GAP_PRESETS["normal"])
+        gap = float(np.clip(self._overrides.get("double_gap_ms", gap), 250.0, 1200.0))
+
+        mg = p.get("magnet")
+        magnet = None
+        if mg:
+            magnet = ({"radius_px": 0.0, "pull": 0.0} if mg.get("off") else
+                      {"radius_px": round(float(mg["radius_px"]) * float(mg.get("scale", 1.0)), 1),
+                       "pull": float(mg.get("pull", 0.3))})
+        return {
+            "smoothing_level": round(level, 2),
+            "auto_smoothing_level": round(auto_level, 2),
+            "sensitivity": sensitivity,
+            "min_threshold": float(blink.get("min_threshold", 0.30)) if personal_blink else 0.30,
+            "max_closed_ms": float(blink.get("max_closed_ms", 700.0)) if personal_blink else 700.0,
+            "double_gap_ms": gap,
+            "personal_blink": personal_blink,
+            "magnet": magnet,
+        }
+
+    def _apply_effective(self) -> None:
+        e = self.effective()
+        self.stabilizer.set_params(smoothing_params(e["smoothing_level"]))
+        cfg = self.blink.config
+        cfg.sensitivity = e["sensitivity"]
+        cfg.min_threshold = e["min_threshold"]
+        cfg.max_closed_ms = e["max_closed_ms"]
+        cfg.double_gap_ms = e["double_gap_ms"]
+
+    def _save_personal(self) -> None:
+        try:
+            self.users.save_personal(self.user["id"], self.personal)
+        except OSError:
+            log.warning("Could not save personal settings", exc_info=True)
+
+    def personal_view(self) -> dict:
+        """What the page shows in the Personalization Lab (and uses for the magnet)."""
+        e = self.effective()
+        p = self.personal
+        events = self.data.ft_events()
+        trained_ts = float(self.model.meta.get("trained_ts", 0.0)) if self.model else 0.0
+        meta = self.model.meta if self.model else {}
+        return {
+            "user": {"id": self.user["id"], "name": self.user["name"]},
+            "smoothing_level": e["smoothing_level"],
+            "auto_smoothing_level": e["auto_smoothing_level"],
+            "smoothing_profile": p.get("smoothing"),
+            "magnet": e["magnet"],
+            "magnet_profile": p.get("magnet"),
+            "blink": {"sensitivity": round(e["sensitivity"], 3), "double_gap_ms": round(e["double_gap_ms"]),
+                      "personal": e["personal_blink"]},
+            "blink_profile": p.get("blink"),
+            "model": None if not self.model else {
+                "version": meta.get("version"),
+                "config": ModelConfig.from_dict(meta.get("config")).name,
+                "source": meta.get("source", "calibration"),
+                "trained_at": meta.get("trained_at"),
+                "cv_error_px": meta.get("cv_error_px"),
+            },
+            "accuracy_px": self.profile_meta.get("accuracy_px"),
+            "ft_events": len(events),
+            "ft_new_events": sum(1 for frames in events.values() if frames[0].t > trained_ts),
+            "finetune_jobs": (p.get("finetune") or {}).get("jobs", [])[-8:],
+            "model_history": p.get("model_history", [])[-12:],
+            "experiments": p.get("experiments", {}),
+            "learning": bool(self.settings.get("learning", True)),
+            "job_running": self._job_running(),
+        }
+
+    def _record_model(self, source: str, **extra) -> None:
+        """Give the current model a new version number and log it."""
+        version = int(self.personal.get("model_version", 0)) + 1
+        self.personal["model_version"] = version
+        self.model.meta["version"] = version
+        self.model.meta.setdefault("source", source)
+        entry = {"version": version, "source": source, "time": _now(),
+                 "config": ModelConfig.from_dict(self.model.meta.get("config")).name, **extra}
+        self.personal["model_history"] = (self.personal.get("model_history", []) + [entry])[-50:]
 
     # ------------------------------------------------------------------
     # Frames
     # ------------------------------------------------------------------
     def handle_frame(self, payload: bytes) -> list[dict]:
+        with self._lock:
+            return self._handle_frame(payload)
+
+    def _handle_frame(self, payload: bytes) -> list[dict]:
         started = time.perf_counter()
         try:
             header, image = parse_frame(payload)
@@ -150,6 +313,7 @@ class TrackerSession:
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
+        features = raw = None
 
         if obs is None:
             events = self.blink.update_missing(t)
@@ -158,22 +322,25 @@ class TrackerSession:
             closing = False
         else:
             feats = extract_features(obs.points_px, obs.image_size, obs.blendshapes, obs.matrix)
+            features = feats.vector
             events = self.blink.update(t, feats.closure)
             state = self.blink.state()
             closing = state.closing
             raw = self.model.predict(feats.vector)[0] if self.model is not None else None
             gaze, frozen = self.stabilizer.update(t, raw, closing)
+            if self._blink_recording is not None and len(self._blink_recording) < MAX_BLINK_RECORDING:
+                self._blink_recording.append((t, feats.closure))
 
             labeled = False
             label = header.get("label")
-            if isinstance(label, dict) and not closing and label.get("kind") in KINDS:
+            if isinstance(label, dict) and not closing and label.get("kind") in ("cal", "head", "val", "adjust"):
                 try:
                     target = (float(label["x"]), float(label["y"]))
                     point = int(label.get("pt", 0))
                 except (KeyError, TypeError, ValueError):
                     pass
                 else:
-                    self.data.add(LabeledFrame(t=t, features=feats.vector.copy(), target=target,
+                    self.data.add(LabeledFrame(t=self.wall(), features=feats.vector.copy(), target=target,
                                                kind=label["kind"], point=point))
                     labeled = True
 
@@ -193,7 +360,9 @@ class TrackerSession:
             if header.get("overlay"):
                 msg["eyes"] = overlay_points(obs.points_px, obs.image_size, feats)
 
-        self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze))
+        self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze,
+                                          features=None if features is None else features.copy(),
+                                          raw=raw, wall=self.wall()))
         msg["ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         msg["fps"] = self._fps()
         out = [msg]
@@ -240,9 +409,12 @@ class TrackerSession:
         if handler is None:
             return [{"type": "error", "error": f"unknown command {kind!r}"}]
         try:
-            return handler(cmd)
-        except CalibrationError as exc:
+            with self._lock:
+                return handler(cmd)
+        except (CalibrationError, PersonalizationError) as exc:
             error = str(exc)
+        except UnknownUser:
+            error = "Unknown person"
         except Exception as exc:  # keep the session alive; report to the page
             log.exception("Command %r failed", kind)
             error = f"{type(exc).__name__}: {exc}"
@@ -261,26 +433,31 @@ class TrackerSession:
             self.screen = {k: screen.get(k) for k in ("w", "h", "dpr")}
         if isinstance(cmd.get("settings"), dict):
             self._apply_settings(cmd["settings"])
-        return [{"type": "hello", "profile": self.profiles.summary(), "model": self.model is not None}]
+        return [{"type": "hello", "profile": self.profiles.summary(), "model": self.model is not None,
+                 "user": self.user, "users": self.users.list(), "personal": self.personal_view()}]
 
     def _cmd_settings(self, cmd: dict) -> list[dict]:
         self._apply_settings(cmd)
-        return [{"type": "settings", **self.settings}]
+        return [{"type": "settings", **self.settings, "effective": self.effective()}]
 
     def _apply_settings(self, s: dict) -> None:
-        smoothing = s.get("smoothing")
-        if smoothing in SMOOTHING_PRESETS:
-            self.settings["smoothing"] = smoothing
-            self.stabilizer.set_params(SMOOTHING_PRESETS[smoothing])
-        sens = s.get("blink_sensitivity")
-        if sens in BLINK_SENSITIVITY_PRESETS:
-            self.settings["blink_sensitivity"] = sens
-            self.blink.config.sensitivity = BLINK_SENSITIVITY_PRESETS[sens]
-        speed = s.get("double_blink")
-        if speed in DOUBLE_BLINK_GAP_PRESETS:
-            self.settings["double_blink"] = speed
-            self.blink.config.double_gap_ms = DOUBLE_BLINK_GAP_PRESETS[speed]
+        if s.get("smoothing") in (*SMOOTHING_LEVELS, "auto"):
+            self.settings["smoothing"] = s["smoothing"]
+        if s.get("blink_sensitivity") in (*BLINK_SENSITIVITY_PRESETS, "personal"):
+            self.settings["blink_sensitivity"] = s["blink_sensitivity"]
+        if s.get("double_blink") in (*DOUBLE_BLINK_GAP_PRESETS, "personal"):
+            self.settings["double_blink"] = s["double_blink"]
+        if isinstance(s.get("learning"), bool):
+            self.settings["learning"] = s["learning"]
+        # Temporary overrides used while an A/B experiment round runs.
+        if s.get("clear_overrides"):
+            self._overrides = {}
+        for key, lo, hi in (("smoothing_level", 0.0, 10.0), ("double_gap_ms", 250.0, 1200.0)):
+            if isinstance(s.get(key), (int, float)):
+                self._overrides[key] = float(np.clip(s[key], lo, hi))
+        self._apply_effective()
 
+    # -- calibration ---------------------------------------------------------------
     def _cmd_calibration_start(self, cmd: dict) -> list[dict]:
         mode = cmd.get("mode", "full")
         if mode == "adjust":
@@ -288,6 +465,7 @@ class TrackerSession:
                 return [{"type": "calibration_started", "ok": False, "error": "No calibration to adjust"}]
             self.data.clear(["adjust"])
         else:
+            # Keep the fine-tuning samples: they still describe this person's eyes.
             self.data.clear(["cal", "head", "val", "adjust"])
         return [{"type": "calibration_started", "ok": True, "mode": mode}]
 
@@ -297,13 +475,13 @@ class TrackerSession:
             if self.model is None:
                 raise CalibrationError("No calibration to adjust")
             info = fit_adjustment(self.model, self.data)
+            self.model.meta["trained_ts"] = self.wall()
+            self._record_model("adjust", error_px=round(info["error_after_px"], 1))
             self.stabilizer.reset()
-            if self.profiles.exists():
-                try:
-                    self.profiles.save_correction(self.model)
-                except (OSError, ValueError):
-                    log.warning("Could not update saved profile", exc_info=True)
-            return [{"type": "calibration_result", "ok": True, "mode": "adjust", **info}]
+            self._save_profile()
+            self._save_personal()
+            return [{"type": "calibration_result", "ok": True, "mode": "adjust", **info,
+                     "personal": self.personal_view()}]
         model, info = fit_full_calibration(self.data)
         self.model = model
         self.stabilizer.reset()
@@ -321,26 +499,53 @@ class TrackerSession:
         except CalibrationError:
             log.info("Refit with validation data failed; keeping the first model")
         self.stabilizer.reset()
+        # Personalise smoothing and the button magnet from the measured precision / accuracy.
+        old_sm = self.personal.get("smoothing") or {}
+        old_mg = self.personal.get("magnet") or {}
+        self.personal["smoothing"] = {**tune_smoothing(result["precision_px"]), "bias": old_sm.get("bias", 0.0)}
+        self.personal["magnet"] = {**recommend_magnet(result["mean_error_px"]), "scale": old_mg.get("scale", 1.0),
+                                   "off": old_mg.get("off", False)}
+        self.profile_meta["accuracy_px"] = round(result["mean_error_px"], 1)
+        self._record_model("calibration", accuracy_px=round(result["mean_error_px"], 1),
+                           cv_error_px=self.model.meta.get("cv_error_px"))
+        self._apply_effective()
         saved = False
         if cmd.get("save", True):
-            try:
-                self.profiles.save(self.model, self.data, self.screen, round(result["mean_error_px"], 1))
-                saved = True
-            except OSError:
-                log.warning("Could not save calibration profile", exc_info=True)
-        return [{"type": "validation_result", "ok": True, "saved": saved, **result}]
+            saved = self._save_profile()
+        self._save_personal()
+        return [{"type": "validation_result", "ok": True, "saved": saved, **result,
+                 "personal": self.personal_view()}]
+
+    # -- profile / people -----------------------------------------------------------------
+    def _save_profile(self) -> bool:
+        if self.model is None:
+            return False
+        try:
+            with self.users.lock_for(self.user["id"]):
+                self.profiles.save(self.model, self.data, self.screen, self.profile_meta.get("accuracy_px"))
+            self._unsaved_events = 0
+            return True
+        except OSError:
+            log.warning("Could not save calibration profile", exc_info=True)
+            return False
+
+    def _save_if_dirty(self) -> None:
+        if self._unsaved_events and self.model is not None:
+            self._save_profile()
 
     def _cmd_profile_load(self, cmd: dict) -> list[dict]:
         if not self.profiles.exists():
-            return [{"type": "profile", "loaded": False, "error": "No saved calibration"}]
+            return [{"type": "profile", "loaded": False, "error": "No saved calibration",
+                     "personal": self.personal_view()}]
         try:
             model, data, meta = self.profiles.load()
         except (OSError, ValueError, KeyError) as exc:
             return [{"type": "profile", "loaded": False, "error": f"Could not load saved calibration: {exc}"}]
         self.model = model
         self.data = data
+        self.profile_meta = meta
         self.stabilizer.reset()
-        return [{"type": "profile", "loaded": True, **meta}]
+        return [{"type": "profile", "loaded": True, **meta, "personal": self.personal_view()}]
 
     def _cmd_profile_delete(self, cmd: dict) -> list[dict]:
         try:
@@ -349,3 +554,321 @@ class TrackerSession:
             return [{"type": "profile", "ok": False, "loaded": self.model is not None,
                      "error": f"Could not delete the saved calibration: {exc}"}]
         return [{"type": "profile", "ok": True, "loaded": self.model is not None, "deleted": True}]
+
+    def _users_reply(self) -> list[dict]:
+        return [{"type": "users", "ok": True, "users": self.users.list(), "user": self.user,
+                 "profile": self.profiles.summary(), "personal": self.personal_view()}]
+
+    def _switch_user(self, user: dict) -> None:
+        self._save_if_dirty()
+        self.user = user
+        self.personal = self.users.load_personal(user["id"])
+        self.model = None
+        self.data = CalibrationData()
+        self.profile_meta = {}
+        self._overrides = {}
+        self._blink_recording = None
+        self.stabilizer.reset()
+        self.blink.reset()
+        self._apply_effective()
+
+    def _cmd_users(self, cmd: dict) -> list[dict]:
+        return self._users_reply()
+
+    def _cmd_user_select(self, cmd: dict) -> list[dict]:
+        self._switch_user(self.users.select(str(cmd.get("id"))))
+        return self._users_reply()
+
+    def _cmd_user_create(self, cmd: dict) -> list[dict]:
+        self._switch_user(self.users.create(cmd.get("name")))
+        return self._users_reply()
+
+    def _cmd_user_rename(self, cmd: dict) -> list[dict]:
+        user_id = str(cmd.get("id") or self.user["id"])
+        user = self.users.rename(user_id, str(cmd.get("name", "")))
+        if user_id == self.user["id"]:
+            self.user = user
+        return self._users_reply()
+
+    def _cmd_user_delete(self, cmd: dict) -> list[dict]:
+        user_id = str(cmd.get("id"))
+        self.users.delete(user_id)
+        if user_id == self.user["id"]:
+            self._unsaved_events = 0  # nothing left to save for them
+            self._switch_user(self.users.ensure_active())
+        return self._users_reply()
+
+    # -- learning from use ---------------------------------------------------------------------
+    def _find_record(self, frame_id) -> Optional[int]:
+        for i in range(len(self._history) - 1, -1, -1):
+            if self._history[i].frame_id == frame_id:
+                return i
+        return None
+
+    def _cmd_label_event(self, cmd: dict) -> list[dict]:
+        """A practice target was popped or a button clicked: learn where the eyes were."""
+        def skip(reason: str) -> list[dict]:
+            return [{"type": "label_stored", "ok": True, "stored": False, "reason": reason}]
+
+        if not self.settings.get("learning", True):
+            return skip("learning is off")
+        if self.model is None:
+            return skip("not calibrated")
+        idx = self._find_record(cmd.get("pre_frame"))
+        if idx is None:
+            return skip("frame not found")
+        anchor = self._history[idx]
+
+        def same_fixation(r: _FrameRecord) -> bool:
+            # Skip frames from while the eyes were still travelling to the target
+            # (and frames without a gaze estimate, which we cannot check).
+            if anchor.raw is None:
+                return True
+            if r.raw is None:
+                return False
+            return float(np.hypot(*(r.raw - anchor.raw))) <= FIXATION_RADIUS_PX
+
+        window = [r for r in list(self._history)[:idx + 1]
+                  if r.features is not None and not r.closing and anchor.t - r.t <= LABEL_WINDOW_S
+                  and same_fixation(r)]
+        if len(window) < 4:
+            return skip("eyes were not steady")
+        kind = cmd.get("kind")
+        if kind == "practice":
+            try:
+                target = (float(cmd["target"][0]), float(cmd["target"][1]))
+            except (KeyError, TypeError, ValueError, IndexError):
+                raise PersonalizationError("practice events need a target")
+            weight = 1.0
+        elif kind == "click":
+            try:
+                x0, y0, x1, y1 = (float(v) for v in cmd["rect"])
+            except (KeyError, TypeError, ValueError):
+                raise PersonalizationError("click events need a rect")
+            sw = float((self.screen or {}).get("w") or 1920)
+            sh = float((self.screen or {}).get("h") or 1080)
+            if x1 - x0 > 0.45 * sw or y1 - y0 > 0.45 * sh:
+                return skip("target too large to be informative")
+            pred = np.mean([r.raw for r in window if r.raw is not None], axis=0)
+            ix, iy = 0.25 * (x1 - x0) / 2, 0.25 * (y1 - y0) / 2
+            target = (float(np.clip(pred[0], x0 + ix, x1 - ix)), float(np.clip(pred[1], y0 + iy, y1 - iy)))
+            weight = 0.5
+        else:
+            raise PersonalizationError("unknown event kind")
+        event = self.data.next_event_id()
+        for r in window:
+            self.data.add(LabeledFrame(t=r.wall, features=r.features, target=target, kind="ft",
+                                       point=event, weight=weight))
+        self.data.prune_ft()
+        self._unsaved_events += 1
+        if self._unsaved_events >= SAVE_EVERY_EVENTS:
+            self._save_profile()
+        started = self._maybe_autostart_finetune()
+        view = self.personal_view()
+        return [{"type": "label_stored", "ok": True, "stored": True, "event": event,
+                 "ft_new_events": view["ft_new_events"], "finetune_started": started}]
+
+    def _job_running(self) -> bool:
+        return self._job is not None and self._job.is_alive()
+
+    def _maybe_autostart_finetune(self) -> bool:
+        if self._job_running() or self.model is None or not self.settings.get("learning", True):
+            return False
+        if self.wall() - self._last_job_at < AUTO_FINETUNE_MIN_GAP_S:
+            return False
+        if self.personal_view()["ft_new_events"] < AUTO_FINETUNE_EVENTS:
+            return False
+        return self._start_finetune(auto=True)
+
+    def _start_finetune(self, auto: bool) -> bool:
+        if self._job_running() or self.model is None:
+            return False
+        champion = self.model
+        snapshot = self.data.copy()
+        user_id = self.user["id"]
+        self._last_job_at = self.wall()
+
+        def run() -> None:
+            try:
+                new_model, report = run_finetune(champion, snapshot)
+            except (PersonalizationError, CalibrationError) as exc:
+                self._push({"type": "finetune_result", "ok": False, "auto": auto, "error": str(exc)})
+                return
+            except Exception as exc:
+                log.exception("Fine-tuning failed")
+                self._push({"type": "finetune_result", "ok": False, "auto": auto, "error": f"{exc}"})
+                return
+            with self._lock:
+                if self.user["id"] != user_id or self.model is not champion:
+                    self._push({"type": "finetune_result", "ok": False, "auto": auto,
+                                "error": "Skipped: the model changed while training"})
+                    return
+                if new_model is not None:
+                    self.model = new_model
+                    self._record_model("fine-tune", error_px=report["candidate_errors_px"][report["winner"]],
+                                       previous_error_px=report["champion_error_px"])
+                    report["version"] = new_model.meta["version"]
+                    self._save_profile()
+                ft = self.personal.setdefault("finetune", {})
+                ft["jobs"] = (ft.get("jobs", []) + [{**report, "auto": auto}])[-30:]
+                self._save_personal()
+                view = self.personal_view()
+            self._push({"type": "finetune_result", "ok": True, "auto": auto, **report, "personal": view})
+
+        self._job = threading.Thread(target=run, name="paralic-finetune", daemon=True)
+        self._job.start()
+        return True
+
+    def _cmd_finetune(self, cmd: dict) -> list[dict]:
+        if self.model is None:
+            raise PersonalizationError("Calibrate first")
+        if self._job_running():
+            return [{"type": "finetune_started", "ok": False, "error": "Already fine-tuning"}]
+        self._start_finetune(auto=bool(cmd.get("auto", False)))
+        return [{"type": "finetune_started", "ok": True}]
+
+    def wait_for_job(self, timeout: float = 60.0) -> None:
+        """Block until a running background job finishes (used by tests and tools)."""
+        job = self._job
+        if job is not None:
+            job.join(timeout)
+
+    # -- blink personalisation ------------------------------------------------------------------
+    def _cmd_blink_calibration_start(self, cmd: dict) -> list[dict]:
+        self._blink_recording = []
+        return [{"type": "blink_calibration_started", "ok": True}]
+
+    def _cmd_blink_calibration_finish(self, cmd: dict) -> list[dict]:
+        samples, self._blink_recording = self._blink_recording or [], None
+        result = analyze_blinks(samples)
+        result["gap_bias_ms"] = (self.personal.get("blink") or {}).get("gap_bias_ms", 0)
+        self.personal["blink"] = result
+        self._save_personal()
+        self._apply_effective()
+        return [{"type": "blink_calibration_result", "ok": True, **result, "personal": self.personal_view()}]
+
+    # -- A/B experiments -----------------------------------------------------------------------------
+    def _experiment(self, cmd: dict) -> str:
+        name = cmd.get("experiment")
+        if name not in EXPERIMENTS:
+            raise PersonalizationError("Unknown experiment")
+        return name
+
+    def _current_trials(self, name: str) -> tuple[dict, list[dict]]:
+        exps = self.users.load_experiments(self.user["id"])
+        entry = exps.setdefault(name, {"epoch": 0, "trials": []})
+        return exps, [t for t in entry["trials"] if t.get("epoch") == entry["epoch"]]
+
+    def _cmd_experiment_plan(self, cmd: dict) -> list[dict]:
+        name = self._experiment(cmd)
+        arms = experiment_arms(name, self.effective())
+        _, trials = self._current_trials(name)
+        analysis = analyze_experiment(trials, [a["id"] for a in arms])
+        return [{"type": "experiment_plan", "ok": True, "experiment": name, "title": EXPERIMENTS[name]["title"],
+                 "arms": arms, "analysis": analysis}]
+
+    def _cmd_experiment_reset(self, cmd: dict) -> list[dict]:
+        name = self._experiment(cmd)
+        exps = self.users.load_experiments(self.user["id"])
+        entry = exps.setdefault(name, {"epoch": 0, "trials": []})
+        entry["epoch"] += 1
+        self.users.save_experiments(self.user["id"], exps)
+        return self._cmd_experiment_plan(cmd)
+
+    def _cmd_experiment_log(self, cmd: dict) -> list[dict]:
+        name = self._experiment(cmd)
+        arms = experiment_arms(name, self.effective() if not self._overrides else self._baseline_effective())
+        arm_ids = [a["id"] for a in arms]
+        raw_trials = cmd.get("trials")
+        if not isinstance(raw_trials, list) or not raw_trials:
+            raise PersonalizationError("No trials")
+        clean = []
+        for t in raw_trials[:200]:
+            if not isinstance(t, dict) or t.get("arm") not in arm_ids:
+                continue
+            clean.append({
+                "arm": t["arm"],
+                "time_ms": float(np.clip(float(t.get("time_ms", TRIAL_TIMEOUT_MS)), 0.0, TRIAL_TIMEOUT_MS)),
+                "misses": int(np.clip(int(t.get("misses", 0)), 0, 50)),
+                "timeout": bool(t.get("timeout", False)),
+            })
+        exps = self.users.load_experiments(self.user["id"])
+        entry = exps.setdefault(name, {"epoch": 0, "trials": []})
+        for t in clean:
+            entry["trials"].append({**t, "epoch": entry["epoch"], "time": _now()})
+        entry["trials"] = entry["trials"][-2000:]
+        current = [t for t in entry["trials"] if t.get("epoch") == entry["epoch"]]
+        analysis = analyze_experiment(current, arm_ids)
+        applied = None
+        if analysis["decision"] == "adopt":
+            applied = self._adopt(name, analysis["best"], {a["id"]: a for a in arms})
+            entry["epoch"] += 1  # a new baseline: start counting again
+        self.users.save_experiments(self.user["id"], exps)
+        self.personal.setdefault("experiments", {})[name] = {
+            "decision": analysis["decision"], "best": analysis["best"], "p_value": analysis["p_value"],
+            "effect": analysis["effect"], "arms": analysis["arms"], "applied": applied, "updated": _now(),
+        }
+        self._save_personal()
+        self._overrides = {}
+        self._apply_effective()
+        return [{"type": "experiment_result", "ok": True, "experiment": name, **analysis, "applied": applied,
+                 "logged": len(clean), "personal": self.personal_view()}]
+
+    def _baseline_effective(self) -> dict:
+        saved, self._overrides = self._overrides, {}
+        try:
+            return self.effective()
+        finally:
+            self._overrides = saved
+
+    def _adopt(self, name: str, arm_id: str, arms: dict) -> dict:
+        """Make the winning arm this person's new normal."""
+        arm = arms[arm_id]
+        if name == "smoothing":
+            sm = self.personal.setdefault("smoothing", {"tuned_level": SMOOTHING_LEVELS["medium"]})
+            sm["bias"] = float(arm["smoothing_level"]) - float(sm.get("tuned_level", SMOOTHING_LEVELS["medium"]))
+            self.settings["smoothing"] = "auto"
+            return {"arm": arm_id, "smoothing_level": arm["smoothing_level"], "settings": {"smoothing": "auto"}}
+        if name == "magnet":
+            mg = self.personal.setdefault("magnet", {"radius_px": 110.0, "pull": 0.3, "scale": 1.0})
+            if arm_id == "off":
+                mg["off"] = True
+            else:
+                mg["off"] = False
+                mg["scale"] = float(arm["magnet"]["radius_px"]) / max(float(mg["radius_px"]), 1.0)
+                mg["pull"] = float(arm["magnet"]["pull"])
+            return {"arm": arm_id, "magnet": arm["magnet"], "settings": {"snap": "auto"}}
+        if name == "double_blink":
+            bl = self.personal.setdefault("blink", {})
+            base = float(bl.get("double_gap_ms", DOUBLE_BLINK_GAP_PRESETS["normal"]))
+            bl["gap_bias_ms"] = float(arm["double_gap_ms"]) - base
+            self.settings["double_blink"] = "personal"
+            return {"arm": arm_id, "double_gap_ms": arm["double_gap_ms"], "settings": {"doubleBlink": "personal"}}
+        raise PersonalizationError("Unknown experiment")
+
+    # -- personal overview ---------------------------------------------------------------------------
+    def _cmd_personal_get(self, cmd: dict) -> list[dict]:
+        return [{"type": "personal", "ok": True, "personal": self.personal_view()}]
+
+    def _cmd_personal_reset(self, cmd: dict) -> list[dict]:
+        part = cmd.get("part")
+        if part == "experiments":
+            self.personal.pop("experiments", None)
+            self.users.save_experiments(self.user["id"], {})
+            for key in ("smoothing", "magnet"):
+                if key in self.personal:
+                    self.personal[key].update({"bias": 0.0} if key == "smoothing" else {"scale": 1.0, "off": False})
+            if "blink" in self.personal:
+                self.personal["blink"]["gap_bias_ms"] = 0
+        elif part == "blink":
+            self.personal.pop("blink", None)
+        elif part == "learning":
+            self.data.clear(["ft"])
+            self._unsaved_events += 1
+            self._save_if_dirty()
+            self.personal.pop("finetune", None)
+        else:
+            raise PersonalizationError("Unknown part")
+        self._save_personal()
+        self._apply_effective()
+        return [{"type": "personal", "ok": True, "personal": self.personal_view()}]

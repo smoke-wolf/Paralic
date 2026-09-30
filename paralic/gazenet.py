@@ -160,12 +160,28 @@ class MLPRegressor:
     def fit(self, X: np.ndarray, Y: np.ndarray, weights: Optional[np.ndarray] = None, *, l2: float = 1e-2,
             l2_skip: float = 1e-4, delta: float = 0.35, iters: int = 600, lr: float = 0.01,
             ridge_lam: float = 1e-2) -> "MLPRegressor":
+        """Train from scratch: ridge-initialised skip path, then Adam on everything.
+
+        With ``iters=0`` this is exactly a ridge-regression (linear) model.
+        """
         n = X.shape[0]
         w = np.ones(n) if weights is None else weights * (n / weights.sum())
         Ws, b = ridge_fit(X, Y, ridge_lam, w)
         self.Ws[...] = Ws
         self.b[...] = b
+        self._adam(X, Y, w, l2, l2_skip, delta, iters, lr)
+        return self
 
+    def continue_training(self, X: np.ndarray, Y: np.ndarray, weights: Optional[np.ndarray] = None, *,
+                          l2: float = 1e-2, l2_skip: float = 1e-4, delta: float = 0.35, iters: int = 300,
+                          lr: float = 0.003) -> "MLPRegressor":
+        """Fine-tune: keep the current weights and train a little more (warm start)."""
+        n = X.shape[0]
+        w = np.ones(n) if weights is None else weights * (n / weights.sum())
+        self._adam(X, Y, w, l2, l2_skip, delta, iters, lr)
+        return self
+
+    def _adam(self, X, Y, w, l2, l2_skip, delta, iters, lr) -> None:
         m = np.zeros_like(self.theta)
         v = np.zeros_like(self.theta)
         beta1, beta2, eps = 0.9, 0.999, 1e-8
@@ -178,7 +194,6 @@ class MLPRegressor:
             v *= beta2
             v += (1.0 - beta2) * g * g
             self.theta -= (lr_t / (1.0 - beta1 ** step)) * m / (np.sqrt(v / (1.0 - beta2 ** step)) + eps)
-        return self
 
     # -- serialisation ------------------------------------------------------
     def to_dict(self) -> dict:
@@ -241,6 +256,46 @@ class AffineCorrection:
 # GazeNet = scalers + ensemble + correction
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class ModelConfig:
+    """One network architecture to try. ``hidden=None`` means a linear model."""
+
+    hidden: Optional[tuple[int, int]] = (32, 16)
+    l2: float = 1e-2
+
+    @property
+    def name(self) -> str:
+        return "linear" if self.hidden is None else f"{self.hidden[0]}x{self.hidden[1]} l2={self.l2:g}"
+
+    def build(self, n_in: int, seed: int) -> MLPRegressor:
+        return MLPRegressor(n_in, 2, self.hidden or (4, 4), seed=seed)
+
+    def fit(self, net: MLPRegressor, X, Y, w, iters: int) -> MLPRegressor:
+        if self.hidden is None:  # ridge regression only (the non-linear branch stays at zero)
+            return net.fit(X, Y, w, iters=0)
+        return net.fit(X, Y, w, l2=self.l2, iters=iters)
+
+    def to_dict(self) -> dict:
+        return {"hidden": list(self.hidden) if self.hidden else None, "l2": self.l2}
+
+    @classmethod
+    def from_dict(cls, d: Optional[dict]) -> "ModelConfig":
+        if not d:
+            return cls()
+        return cls(hidden=tuple(d["hidden"]) if d.get("hidden") else None, l2=float(d.get("l2", 1e-2)))
+
+
+def default_configs() -> list[ModelConfig]:
+    """Fast search used right after calibration: weight decay only."""
+    return [ModelConfig((32, 16), l2) for l2 in (1e-3, 1e-2, 1e-1)]
+
+
+def search_configs() -> list[ModelConfig]:
+    """Wider per-person model search (run in the background while fine-tuning)."""
+    configs = [ModelConfig(h, l2) for h in ((16, 8), (32, 16), (64, 32)) for l2 in (1e-3, 1e-2, 1e-1)]
+    return configs + [ModelConfig(None)]
+
+
 @dataclass
 class TrainReport:
     l2: float
@@ -250,6 +305,7 @@ class TrainReport:
     n_samples: int
     n_groups: int
     candidates: dict = field(default_factory=dict)
+    config: str = ""
 
 
 class GazeNet:
@@ -276,19 +332,25 @@ class GazeNet:
     def predict(self, X: np.ndarray) -> np.ndarray:
         return self.correction.apply(self.predict_uncorrected(X))
 
+    def clone(self) -> "GazeNet":
+        return GazeNet.from_dict(self.to_dict())
+
     # -- training -----------------------------------------------------------
     @classmethod
     def train(cls, X: np.ndarray, Y: np.ndarray, groups: Sequence, weights: Optional[np.ndarray] = None, *,
               holdout: Optional[np.ndarray] = None, min_std: Optional[np.ndarray] = None, ensemble: int = 3,
-              iters: int = 600, l2_grid: Sequence[float] = L2_GRID, folds: int = 3,
+              iters: int = 600, l2_grid: Optional[Sequence[float]] = None,
+              configs: Optional[Sequence[ModelConfig]] = None, folds: int = 3,
               seed: int = 0) -> tuple["GazeNet", TrainReport]:
-        """Train an ensemble, picking the weight decay by grouped cross-validation.
+        """Train an ensemble, picking the architecture / weight decay by grouped cross-validation.
 
         ``groups`` identifies the calibration point each sample belongs to;
         cross-validation holds out whole points, so it measures how well the
         network *interpolates* to screen positions it has never seen.
         ``holdout`` marks the samples that may be held out (the head-movement
         samples, for example, should always stay in training).
+        ``configs`` are the candidate models (an A/B/n test on this person's
+        data); by default only the weight decay of the 32x16 network is tuned.
         """
         X = np.asarray(X, float)
         Y = np.asarray(Y, float)
@@ -296,55 +358,81 @@ class GazeNet:
         n = X.shape[0]
         w = np.ones(n) if weights is None else np.asarray(weights, float)
         can_hold = np.ones(n, bool) if holdout is None else np.asarray(holdout, bool)
+        if configs is None:
+            grid = l2_grid if l2_grid is not None else cls.L2_GRID
+            configs = [ModelConfig(cls.HIDDEN, float(l2)) for l2 in grid]
+        configs = list(configs)
+        linear = ModelConfig(None)
 
-        def fit_eval(train_idx: np.ndarray, test_idx: np.ndarray, l2: Optional[float]) -> np.ndarray:
+        def fit_eval(train_idx: np.ndarray, test_idx: np.ndarray, config: ModelConfig) -> np.ndarray:
             xs = Scaler.fit(X[train_idx], min_std)
             ys = Scaler.fit(Y[train_idx])
             Xt, Yt = xs.transform(X[train_idx]), ys.transform(Y[train_idx])
             Xv = np.clip(xs.transform(X[test_idx]), -6.0, 6.0)
-            if l2 is None:  # linear baseline
-                W, b = ridge_fit(Xt, Yt, 1e-2, w[train_idx])
-                pred = Xv @ W + b
-            else:
-                net = MLPRegressor(X.shape[1], 2, cls.HIDDEN, seed=seed).fit(
-                    Xt, Yt, w[train_idx], l2=l2, iters=iters)
-                pred = net.forward(Xv)
-            return np.linalg.norm(ys.inverse(pred) - Y[test_idx], axis=1)
+            net = config.fit(config.build(X.shape[1], seed), Xt, Yt, w[train_idx], iters)
+            return np.linalg.norm(ys.inverse(net.forward(Xv)) - Y[test_idx], axis=1)
 
         hold_groups = np.unique(groups[can_hold])
         n_groups = len(np.unique(groups))
         candidates: dict[str, float] = {}
         cv_err = lin_err = float("nan")
-        best_l2 = float(l2_grid[len(l2_grid) // 2])
-        if len(hold_groups) >= 6 and len(l2_grid) > 1:
+        best = configs[len(configs) // 2] if len(configs) > 1 else configs[0]
+        if len(hold_groups) >= 6 and len(configs) > 1:
             fold_sets = grouped_folds(hold_groups, folds, seed)
             test_sets = [np.flatnonzero(np.isin(groups, hold_groups[f]) & can_hold) for f in fold_sets]
             all_idx = np.arange(n)
 
-            def cv(l2: Optional[float]) -> float:
+            def cv(config: ModelConfig) -> float:
                 errs, ws = [], []
                 for test in test_sets:
                     train = np.setdiff1d(all_idx, test)
-                    errs.append(fit_eval(train, test, l2))
+                    errs.append(fit_eval(train, test, config))
                     ws.append(w[test])
                 return float(np.average(np.concatenate(errs), weights=np.concatenate(ws)))
 
-            for l2 in l2_grid:
-                candidates[f"{l2:g}"] = cv(l2)
-            best_l2 = float(min(l2_grid, key=lambda l: candidates[f"{l:g}"]))
-            cv_err = candidates[f"{best_l2:g}"]
-            lin_err = cv(None)
+            for config in configs:
+                candidates[config.name] = cv(config)
+            if linear.name not in candidates:
+                candidates[linear.name] = cv(linear)
+            best = min(configs, key=lambda c: candidates[c.name])
+            cv_err = candidates[best.name]
+            lin_err = candidates[linear.name]
 
         xs = Scaler.fit(X, min_std)
         ys = Scaler.fit(Y)
         Xs, Ys = xs.transform(X), ys.transform(Y)
-        nets = [MLPRegressor(X.shape[1], 2, cls.HIDDEN, seed=seed + 101 * i).fit(Xs, Ys, w, l2=best_l2, iters=iters)
-                for i in range(ensemble)]
-        model = cls(xs, ys, nets)
+        members = 1 if best.hidden is None else ensemble
+        nets = [best.fit(best.build(X.shape[1], seed + 101 * i), Xs, Ys, w, iters) for i in range(members)]
+        model = cls(xs, ys, nets, meta={"config": best.to_dict(), "l2": best.l2})
         train_err = float(np.average(np.linalg.norm(model.predict(X) - Y, axis=1), weights=w))
-        report = TrainReport(l2=best_l2, cv_error_px=cv_err, linear_cv_error_px=lin_err,
-                             train_error_px=train_err, n_samples=n, n_groups=n_groups, candidates=candidates)
+        report = TrainReport(l2=best.l2, cv_error_px=cv_err, linear_cv_error_px=lin_err,
+                             train_error_px=train_err, n_samples=n, n_groups=n_groups, candidates=candidates,
+                             config=best.name)
         return model, report
+
+    def fine_tune(self, X: np.ndarray, Y: np.ndarray, weights: Optional[np.ndarray] = None, *,
+                  iters: int = 300, lr: float = 0.003) -> "GazeNet":
+        """Return a copy of this network trained a little further on (X, Y).
+
+        The copy keeps this network's input/output scaling and weights as its
+        starting point (a warm start), so a modest amount of new data nudges
+        it rather than replacing what it learned during calibration. Any quick
+        adjustment is folded in: the copy learns the full mapping itself.
+        """
+        X = np.asarray(X, float)
+        Y = np.asarray(Y, float)
+        tuned = self.clone()
+        tuned.correction = AffineCorrection()
+        Xs = np.clip(tuned.x_scaler.transform(X), -6.0, 6.0)
+        Ys = tuned.y_scaler.transform(Y)
+        config = ModelConfig.from_dict(self.meta.get("config"))
+        for net in tuned.nets:
+            if config.hidden is None:
+                net.fit(Xs, Ys, weights, iters=0)
+            else:
+                net.continue_training(Xs, Ys, weights, l2=config.l2, iters=iters, lr=lr)
+        tuned.meta = {**self.meta}
+        return tuned
 
     # -- serialisation ------------------------------------------------------
     def to_dict(self) -> dict:

@@ -14,7 +14,7 @@ from tests.synthetic import Head, VirtualUser
 def client(monkeypatch, tmp_path):
     patch_session(monkeypatch)
     tracker = FakeTracker()
-    app = create_app(profile_path=tmp_path / "profile.json", tracker_factory=lambda: tracker)
+    app = create_app(data_dir=tmp_path, tracker_factory=lambda: tracker)
     # Like a client on this machine (the page is http://localhost:8000; relative
     # WebSocket URLs in the test client use the host name "testserver").
     with TestClient(app, base_url="http://localhost:8000", client=("127.0.0.1", 50000)) as c:
@@ -90,7 +90,7 @@ def test_origin_rules():
 
 
 def test_origin_less_remote_client_rejected(tmp_path):
-    app = create_app(profile_path=tmp_path / "p.json", tracker_factory=FakeTracker)
+    app = create_app(data_dir=tmp_path, tracker_factory=FakeTracker)
     with TestClient(app, client=("192.168.1.20", 5000)) as c:
         with pytest.raises(WebSocketDisconnect):
             with c.websocket_connect("/ws") as ws:
@@ -114,7 +114,7 @@ def test_command_errors_do_not_end_the_session(client, monkeypatch):
 
 
 def test_missing_model_reports_fatal(tmp_path):
-    app = create_app(profile_path=tmp_path / "p.json", tracker_factory=None, model_error="model missing")
+    app = create_app(data_dir=tmp_path, tracker_factory=None, model_error="model missing")
     with TestClient(app, client=("127.0.0.1", 50000)) as c:
         assert c.get("/api/status").json()["error"] == "model missing"
         with c.websocket_connect("/ws") as ws:

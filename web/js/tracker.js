@@ -6,7 +6,9 @@
 // fast as the server can process it without building up lag.
 //
 // The server replies with a "frame" message per frame (gaze position, blink
-// state, ...) plus events such as "blink" and "double_blink".
+// state, ...) plus events such as "blink" and "double_blink". It also answers
+// commands (calibration, people, personalisation) and pushes the results of
+// background jobs such as fine-tuning ("finetune_result").
 
 import { screenInfo, clientToScreen } from './screen-space.js';
 import { serverSettings } from './settings.js';
@@ -22,16 +24,96 @@ class Emitter extends EventTarget {
   }
 }
 
-export class EyeTracker extends Emitter {
+/** The WebSocket command channel shared by the real tracker and demo mode. */
+class Channel extends Emitter {
+  constructor() {
+    super();
+    this.ws = null;
+    this.running = false;
+    this.connected = false;
+    this.pending = new Map();
+    this.fatal = null;
+  }
+
+  connect() {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    this.ws = ws;
+    ws.onopen = () => {
+      this.connected = true;
+      this.send({ type: 'hello', screen: screenInfo(), settings: serverSettings() });
+      this.emit('connection', { connected: true });
+    };
+    ws.onmessage = (e) => {
+      let msg;
+      try {
+        msg = JSON.parse(e.data);
+      } catch {
+        return;
+      }
+      this.onMessage(msg);
+    };
+    ws.onclose = () => {
+      const wasConnected = this.connected;
+      this.connected = false;
+      this.onDisconnect();
+      for (const [, waiters] of this.pending) waiters.forEach((w) => w.reject(new Error('Connection lost')));
+      this.pending.clear();
+      if (wasConnected) this.emit('connection', { connected: false });
+      if (this.running && !this.fatal) setTimeout(() => this.running && this.connect(), 1500);
+    };
+    ws.onerror = () => {};
+  }
+
+  onDisconnect() {}
+
+  onMessage(msg) {
+    const waiters = this.pending.get(msg.type);
+    if (waiters && waiters.length) {
+      const w = waiters.shift();
+      clearTimeout(w.timer);
+      w.resolve(msg);
+    }
+    this.emit(msg.type, msg);
+  }
+
+  send(cmd) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(cmd));
+      return true;
+    }
+    return false;
+  }
+
+  /** Send a command and wait for a reply of type `replyType`. */
+  request(cmd, replyType, timeoutMs = 30000) {
+    return new Promise((resolve, reject) => {
+      const waiters = this.pending.get(replyType) || [];
+      const entry = { resolve, reject, timer: null };
+      entry.timer = setTimeout(() => {
+        const list = this.pending.get(replyType) || [];
+        const i = list.indexOf(entry);
+        if (i >= 0) list.splice(i, 1);
+        reject(new Error(`Timed out waiting for ${replyType}`));
+      }, timeoutMs);
+      waiters.push(entry);
+      this.pending.set(replyType, waiters);
+      if (!this.send(cmd)) {
+        clearTimeout(entry.timer);
+        waiters.pop();
+        reject(new Error('Not connected to the eye tracker'));
+      }
+    });
+  }
+}
+
+export class EyeTracker extends Channel {
   constructor({ frameWidth = 960, quality = 0.82 } = {}) {
     super();
     this.frameWidth = frameWidth;
     this.quality = quality;
     this.video = null;
     this.stream = null;
-    this.ws = null;
-    this.running = false;
-    this.connected = false;
     this.frameId = 0;
     this.inFlight = null;
     this.inFlightSince = 0;
@@ -39,7 +121,6 @@ export class EyeTracker extends Emitter {
     this.latencyMs = 0;
     this.label = null;
     this.overlay = false;
-    this.pending = new Map();
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { alpha: false });
     this.simulated = false;
@@ -81,35 +162,8 @@ export class EyeTracker extends Emitter {
     this.label = label;
   }
 
-  // -- WebSocket ------------------------------------------------------------
-  connect() {
-    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws = ws;
-    ws.onopen = () => {
-      this.connected = true;
-      this.send({ type: 'hello', screen: screenInfo(), settings: serverSettings() });
-      this.emit('connection', { connected: true });
-    };
-    ws.onmessage = (e) => {
-      let msg;
-      try {
-        msg = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      this.onMessage(msg);
-    };
-    ws.onclose = () => {
-      const wasConnected = this.connected;
-      this.connected = false;
-      this.inFlight = null;
-      for (const [, waiters] of this.pending) waiters.forEach((w) => w.reject(new Error('Connection lost')));
-      this.pending.clear();
-      if (wasConnected) this.emit('connection', { connected: false });
-      if (this.running && !this.fatal) setTimeout(() => this.running && this.connect(), 1500);
-    };
-    ws.onerror = () => {};
+  onDisconnect() {
+    this.inFlight = null;
   }
 
   onMessage(msg) {
@@ -124,42 +178,7 @@ export class EyeTracker extends Emitter {
     } else if (msg.type === 'fatal') {
       this.fatal = msg.error;
     }
-    const waiters = this.pending.get(msg.type);
-    if (waiters && waiters.length) {
-      const w = waiters.shift();
-      clearTimeout(w.timer);
-      w.resolve(msg);
-    }
-    this.emit(msg.type, msg);
-  }
-
-  send(cmd) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify(cmd));
-      return true;
-    }
-    return false;
-  }
-
-  /** Send a command and wait for a reply of type `replyType`. */
-  request(cmd, replyType, timeoutMs = 30000) {
-    return new Promise((resolve, reject) => {
-      const waiters = this.pending.get(replyType) || [];
-      const entry = { resolve, reject, timer: null };
-      entry.timer = setTimeout(() => {
-        const list = this.pending.get(replyType) || [];
-        const i = list.indexOf(entry);
-        if (i >= 0) list.splice(i, 1);
-        reject(new Error(`Timed out waiting for ${replyType}`));
-      }, timeoutMs);
-      waiters.push(entry);
-      this.pending.set(replyType, waiters);
-      if (!this.send(cmd)) {
-        clearTimeout(entry.timer);
-        waiters.pop();
-        reject(new Error('Not connected to the eye tracker'));
-      }
-    });
+    super.onMessage(msg);
   }
 
   // -- frame capture --------------------------------------------------------
@@ -214,14 +233,13 @@ export class EyeTracker extends Emitter {
 /**
  * Demo mode: the mouse plays the role of your eyes and the "B" key plays the
  * role of a blink (press it twice quickly to "double blink"). Handy to try the
- * website without a webcam. It emits the same events as EyeTracker.
+ * website without a webcam. It emits the same events as EyeTracker and still
+ * talks to the server for people and personalisation commands.
  */
-export class SimTracker extends Emitter {
+export class SimTracker extends Channel {
   constructor() {
     super();
     this.simulated = true;
-    this.connected = true;
-    this.running = false;
     this.frameId = 0;
     this.latencyMs = 0;
     this.overlay = false;
@@ -230,7 +248,6 @@ export class SimTracker extends Emitter {
     this.closedUntil = 0;
     this.pendingBlink = null;
     this.blinkGapMs = 550;
-    this.history = [];
   }
 
   async start() {
@@ -242,10 +259,7 @@ export class SimTracker extends Emitter {
     window.addEventListener('pointermove', this._onMove);
     window.addEventListener('keydown', this._onKey);
     this.timer = setInterval(() => this.tick(), 33);
-    setTimeout(() => {
-      this.emit('connection', { connected: true });
-      this.emit('hello', { type: 'hello', profile: null, model: true, simulated: true });
-    }, 0);
+    this.connect();
   }
 
   stop() {
@@ -253,6 +267,15 @@ export class SimTracker extends Emitter {
     clearInterval(this.timer);
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('keydown', this._onKey);
+    if (this.ws) this.ws.close();
+  }
+
+  onMessage(msg) {
+    // Without a camera the server may report that face tracking is unavailable,
+    // and it never sends frames: neither matters in demo mode.
+    if (msg.type === 'fatal' || msg.type === 'frame') return;
+    if (msg.type === 'hello') msg = { ...msg, simulated: true };
+    super.onMessage(msg);
   }
 
   setLabel(label) {
@@ -264,13 +287,10 @@ export class SimTracker extends Emitter {
     const now = performance.now();
     const closed = now < this.closedUntil;
     const gaze = this.mouse ? [this.mouse.x, this.mouse.y] : null;
-    const msg = {
+    this.emit('frame', {
       type: 'frame', id, face: true, gaze, raw: gaze, frozen: closed, labeled: !!this.label && !closed,
       closure: closed ? 0.9 : 0.12, closed, closing: closed, thr: [0.5, 0.35], fps: 30, ms: 0, head: [0, 0, 0], dist: 60,
-    };
-    this.history.push({ id, closed, t: now });
-    if (this.history.length > 90) this.history.shift();
-    this.emit('frame', msg);
+    });
     if (this.pendingBlink && !closed && now - this.pendingBlink.end > this.blinkGapMs) {
       this.pendingBlink = null;
       this.emit('blink_expired', { type: 'blink_expired', frame: id });
@@ -283,7 +303,7 @@ export class SimTracker extends Emitter {
     this.closedUntil = now + 140;
     setTimeout(() => {
       const end = performance.now();
-      if (this.pendingBlink && this.pendingBlink.start && now - this.pendingBlink.end <= this.blinkGapMs) {
+      if (this.pendingBlink && now - this.pendingBlink.end <= this.blinkGapMs) {
         const first = this.pendingBlink;
         this.pendingBlink = null;
         this.emit('blink', { type: 'blink', n: 2, frame: this.frameId });
@@ -293,16 +313,5 @@ export class SimTracker extends Emitter {
         this.emit('blink', { type: 'blink', n: 1, frame: this.frameId });
       }
     }, 150);
-  }
-
-  send() {
-    return true;
-  }
-
-  async request(cmd, replyType) {
-    if (cmd.type === 'calibration_fit') return { type: replyType, ok: true, mode: cmd.mode, cv_error_px: 0 };
-    if (cmd.type === 'validation_finish') return { type: replyType, ok: true, mean_error_px: 0, points: [] };
-    if (cmd.type === 'profile_load') return { type: replyType, loaded: false };
-    return { type: replyType, ok: true };
   }
 }

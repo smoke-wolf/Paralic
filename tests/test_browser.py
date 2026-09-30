@@ -71,8 +71,7 @@ def browser():
 def demo_server(tmp_path_factory):
     from paralic.server import create_app
 
-    app = create_app(profile_path=tmp_path_factory.mktemp("data") / "profile.json", tracker_factory=None,
-                     model_error=None)
+    app = create_app(data_dir=tmp_path_factory.mktemp("data"), tracker_factory=None, model_error=None)
     server, thread, url = _serve(app)
     yield url
     server.should_exit = True
@@ -221,7 +220,7 @@ def test_camera_flow(browser, tmp_path):
     from paralic.tracker import FaceTracker
 
     model_bytes = model.read_bytes()
-    app = create_app(profile_path=tmp_path / "profile.json", tracker_factory=lambda: FaceTracker(model_bytes))
+    app = create_app(data_dir=tmp_path, tracker_factory=lambda: FaceTracker(model_bytes))
     server, thread, url = _serve(app)
     ctx = browser.new_context(viewport={"width": 1600, "height": 900})
     try:

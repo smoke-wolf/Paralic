@@ -35,6 +35,7 @@ class BlinkConfig:
     baseline_window_s: float = 1.6
     initial_baseline: float = 0.2
     missing_reset_ms: float = 600.0
+    min_threshold: float = 0.30      # lowest "closed" threshold (personalised for light blinkers)
 
 
 @dataclass
@@ -85,7 +86,7 @@ class BlinkDetector:
         high (e.g. while looking at the bottom of the screen).
         """
         b = self._baseline
-        t_close = float(np.clip(b + self.config.sensitivity * (1.0 - b), 0.30, 0.92))
+        t_close = float(np.clip(b + self.config.sensitivity * (1.0 - b), self.config.min_threshold, 0.92))
         t_open = b + 0.5 * (t_close - b)
         return t_close, t_open
 

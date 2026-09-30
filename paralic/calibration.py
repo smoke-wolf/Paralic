@@ -13,6 +13,10 @@ Kinds of labelled frames:
 * ``val``    - validation dots shown after training (measure accuracy, then
                also used for the final fit)
 * ``adjust`` - the quick 5-point re-adjustment of a saved calibration
+* ``ft``     - fine-tuning samples collected while you use the site: the
+               frames just before you popped a practice target or clicked a
+               button, labelled with where that target was. ``point`` is the
+               event number and ``weight`` how much we trust the label.
 """
 
 from __future__ import annotations
@@ -31,7 +35,11 @@ from .features import EYE_FEATURE_IDX, FEATURE_MIN_STD, FEATURE_NAMES, NUM_FEATU
 from .gazenet import AffineCorrection, GazeNet
 
 PROFILE_VERSION = 1
-KINDS = ("cal", "head", "val", "adjust")
+KINDS = ("cal", "head", "val", "adjust", "ft")
+TRAIN_KINDS = ("cal", "head", "val", "adjust", "ft")
+# Kinds whose samples may be held out in cross-validation (not the head-motion ones).
+HOLDOUT_KINDS = ("cal", "val", "adjust", "ft")
+MAX_FT_EVENTS = 1500
 
 
 class CalibrationError(Exception):
@@ -40,11 +48,12 @@ class CalibrationError(Exception):
 
 @dataclass
 class LabeledFrame:
-    t: float
+    t: float                      # wall-clock time (seconds since the epoch)
     features: np.ndarray
     target: tuple[float, float]
     kind: str
     point: int
+    weight: float = 1.0
 
 
 @dataclass
@@ -53,6 +62,27 @@ class CalibrationData:
 
     def add(self, frame: LabeledFrame) -> None:
         self.frames.append(frame)
+
+    def copy(self) -> "CalibrationData":
+        return CalibrationData(list(self.frames))
+
+    def ft_events(self) -> dict[int, list[LabeledFrame]]:
+        """Fine-tuning events, oldest first: event number -> frames."""
+        events: dict[int, list[LabeledFrame]] = {}
+        for f in self.frames:
+            if f.kind == "ft":
+                events.setdefault(f.point, []).append(f)
+        return dict(sorted(events.items()))
+
+    def next_event_id(self) -> int:
+        return max((f.point for f in self.frames if f.kind == "ft"), default=0) + 1
+
+    def prune_ft(self, max_events: int = MAX_FT_EVENTS) -> None:
+        """Forget the oldest fine-tuning events beyond ``max_events``."""
+        ids = sorted({f.point for f in self.frames if f.kind == "ft"})
+        if len(ids) > max_events:
+            cutoff = ids[len(ids) - max_events]
+            self.frames = [f for f in self.frames if f.kind != "ft" or f.point >= cutoff]
 
     def clear(self, kinds: Optional[Iterable[str]] = None) -> None:
         if kinds is None:
@@ -113,12 +143,12 @@ def prepare_training_set(frames: list[LabeledFrame], chunk: int = 4, stride: int
         kind = group[0].kind
         C = chunk_average(F, 2 if kind == "head" else chunk, 1 if kind == "head" else stride)
         target = np.array(group[0].target, float)
-        gw = head_weight if kind == "head" else 1.0
+        gw = (head_weight if kind == "head" else 1.0) * float(np.mean([f.weight for f in group]))
         Xs.append(C)
         Ys.append(np.repeat(target[None], len(C), axis=0))
         Gs.extend([name] * len(C))
         Ws.append(np.full(len(C), gw / len(C)))
-        Hs.extend([kind in ("cal", "val")] * len(C))
+        Hs.extend([kind in HOLDOUT_KINDS] * len(C))
     if not Xs:
         raise CalibrationError("No usable calibration data")
     W = np.concatenate(Ws)
@@ -129,8 +159,16 @@ def prepare_training_set(frames: list[LabeledFrame], chunk: int = 4, stride: int
 # Training / evaluation
 # ---------------------------------------------------------------------------
 
-def fit_full_calibration(data: CalibrationData, include_validation: bool = False) -> tuple[GazeNet, dict]:
-    kinds = ("cal", "head", "val") if include_validation else ("cal", "head")
+def fit_full_calibration(data: CalibrationData, include_validation: bool = False, *,
+                         kinds: Optional[Iterable[str]] = None, configs=None) -> tuple[GazeNet, dict]:
+    """Train GazeNet on the labelled frames of the given kinds.
+
+    ``configs`` is the list of candidate architectures (see
+    :func:`paralic.gazenet.search_configs`); by default only the weight decay
+    is tuned, which keeps the first calibration fast.
+    """
+    if kinds is None:
+        kinds = ("cal", "head", "val") if include_validation else ("cal", "head")
     frames = data.of_kind(*kinds)
     n_points = len({f.point for f in frames if f.kind == "cal"})
     if n_points < 6:
@@ -142,18 +180,23 @@ def fit_full_calibration(data: CalibrationData, include_validation: bool = False
         raise CalibrationError(
             "Too few calibration points had steady eye data. Try again, keeping your eyes on each dot.")
     started = time.perf_counter()
-    model, report = GazeNet.train(X, Y, G, W, holdout=H, min_std=FEATURE_MIN_STD)
+    model, report = GazeNet.train(X, Y, G, W, holdout=H, min_std=FEATURE_MIN_STD, configs=configs)
     elapsed = time.perf_counter() - started
-    model.meta = {
+    model.meta.update({
+        "trained_ts": time.time(),
         "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "n_frames": len(frames),
         "l2": report.l2,
-    }
+        "cv_error_px": _round(report.cv_error_px),
+        "last_event": max((f.point for f in frames if f.kind == "ft"), default=0),
+    })
     info = {
         "n_frames": len(frames),
         "n_samples": report.n_samples,
         "n_points": usable_points,
         "l2": report.l2,
+        "config": report.config,
+        "candidates": {k: _round(v) for k, v in report.candidates.items()},
         "cv_error_px": _round(report.cv_error_px),
         "linear_cv_error_px": _round(report.linear_cv_error_px),
         "train_error_px": _round(report.train_error_px),
@@ -241,10 +284,11 @@ class ProfileStore:
             "created": doc.get("created"),
             "screen": doc.get("screen"),
             "accuracy_px": doc.get("accuracy_px"),
+            "model_version": doc.get("model", {}).get("meta", {}).get("version"),
         }
 
     def save(self, model: GazeNet, data: CalibrationData, screen: Optional[dict], accuracy_px: Optional[float]) -> None:
-        frames = data.of_kind("cal", "head", "val")
+        frames = data.of_kind(*TRAIN_KINDS)
         doc = {
             "version": PROFILE_VERSION,
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -258,6 +302,7 @@ class ProfileStore:
                 "kinds": [f.kind for f in frames],
                 "points": [f.point for f in frames],
                 "times": [round(f.t, 3) for f in frames],
+                "weights": [round(f.weight, 3) for f in frames],
             },
         }
         self._write(doc)
@@ -288,9 +333,12 @@ class ProfileStore:
         model = GazeNet.from_dict(doc["model"])
         data = CalibrationData()
         d = doc.get("data", {})
-        for feats, target, kind, point, t in zip(d.get("features", []), d.get("targets", []), d.get("kinds", []),
-                                                 d.get("points", []), d.get("times", [])):
-            data.add(LabeledFrame(t=t, features=np.asarray(feats, float), target=tuple(target), kind=kind, point=point))
+        n = len(d.get("features", []))
+        weights = d.get("weights") or [1.0] * n
+        for feats, target, kind, point, t, w in zip(d.get("features", []), d.get("targets", []), d.get("kinds", []),
+                                                    d.get("points", []), d.get("times", []), weights):
+            data.add(LabeledFrame(t=t, features=np.asarray(feats, float), target=tuple(target), kind=kind,
+                                  point=point, weight=float(w)))
         return model, data, {"created": doc.get("created"), "screen": doc.get("screen"),
                              "accuracy_px": doc.get("accuracy_px")}
 
