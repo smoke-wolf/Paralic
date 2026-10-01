@@ -22,6 +22,19 @@ The site itself is designed for eye control: big targets, a Solar System to expl
 a *Talk* page with spoken phrases and an eye-typing keyboard with word prediction, a drag-and-drop game,
 a drawing canvas, a target-practice game, and settings you can change with your eyes.
 
+## Paralic in pictures
+
+<p align="center">
+  <img src="docs/images/screenshot-start.png" width="520" alt="The start screen: “Browse the web with your eyes — or your hand.” with three large buttons, Start eye tracking, Use your hand and Try with a mouse, a list of tips and a drawing of an eye">
+</p>
+<p align="center"><em>The start screen: one click for the eyes, one for a hand, or try it with the mouse.</em></p>
+
+<p align="center">
+  <img src="docs/images/screenshot-explore.png" width="49%" alt="The Explore page, “The Solar System”: eight planet cards; the round gaze cursor rests on Saturn, whose card lights up with a teal outline">
+  <img src="docs/images/screenshot-talk.png" width="49%" alt="The Talk page's eye-typing keyboard: “Can you open the win” has been typed, the predictions winter, wind, windy and window are offered, and the gaze cursor rests on window">
+</p>
+<p align="center"><em>Explore and Talk in the mouse demo mode: the round cursor is where the “eyes” look, and the button under it lights up.</em></p>
+
 ---
 
 ## Quick start
@@ -84,6 +97,9 @@ If port 8000 is busy the next free one is used.
 | Look at *Scroll up / Scroll down* (right edge) | Scrolls; look further towards the arrow to go faster. Blink twice there to jump a page. |
 | Blink twice on *Pause* | Pauses (nothing gets clicked). Blink twice to resume. |
 
+![The Home page: the navigation bar, a welcome panel, the four gestures (look, blink twice, hold one eye closed, look at the arrows) and large tiles; the round gaze cursor rests on the Talk tile, which lights up with a teal outline](docs/images/screenshot-home.png)
+*Home in the mouse demo mode: the round cursor shows where the “eyes” look and the tile under it lights up; a double blink would open it.*
+
 Each person's calibration is saved (numbers only, no images) in `data/users/<id>/`. Several people can share
 the computer: Paralic asks who is using it. Next time you can use your calibration as is, do a
 **Quick adjust** (eyes only: first back to where you sat while calibrating, then 9 dots and 5 dots that measure
@@ -143,6 +159,9 @@ off deletes it too. This is a convenience, not security: a photo would fool it.
   somewhere else starts afresh. *Check head directions* learns which way is which for you and how far you
   comfortably tilt.
 
+![A chart of the left–right cursor position over 2.6 seconds while a simulated person looks at one spot and then jumps to another: the network's per-frame estimates (grey) scatter widely, the One Euro filter's output (violet) is steadier, and the drawn cursor (teal) rests still and reaches the new spot about a third of a second after the jump](docs/images/cursor-motion.png)
+*Balanced movement with “Hold still while you look” on, for a simulated person: the cursor rests on the average of each fixation and moves on when the eyes jump.*
+
 ## Personalisation
 
 * **People** — each person has their own profile (`data/users/<id>/`): gaze networks, calibration data, blink
@@ -156,6 +175,9 @@ off deletes it too. This is a convenience, not security: a photo would fool it.
 * **Personalization Lab** (`#/lab`) — shows what was learned and runs **blind A/B experiments** (smoothing,
   magnet, double-blink timing, dwell time): each round is a shuffled, balanced set of targets where every
   target secretly uses one variant; a permutation test decides, and a clear winner becomes your default.
+
+![Two dumbbell charts from the benchmark on simulated people. Left, gaze error without and with personalisation: a quick adjust after sitting differently brings 70–200 px down to about 20 px; learning from use brings about 130 px down to 35–50 px, changes little when nothing moved, and refuses labels that are all wrong. Right, double blinks and held winks caught with standard and with personal thresholds: light blinks, an eye that barely closes and gentle winks go from none to all; the others are all caught either way](docs/images/personalisation-benchmark.png)
+*What personalisation does, measured on simulated people ([docs/benchmark.md](docs/benchmark.md)): simulations, not measurements on real people.*
 
 **Fully hands-free:** after the camera permission has been granted once, the site starts tracking without a
 click. For a kiosk-style setup, launch the browser in full screen, e.g.
@@ -183,6 +205,9 @@ in to the whole screen (13 dots), and your own pinch — distances are split int
 "open" and "closed" with your range, so a hand that can't close fully still
 clicks reliably. It ends with a little practice (with a time limit and a Skip
 button). **Quick re-point** redoes only the dots and keeps your pinch.
+
+![Top: three photos cropped to a hand, with the 21 landmarks found by MediaPipe's hand network drawn on them: a pointing index finger (its tip is the cursor), an open hand with spread fingers (pause), and a thumbs-up (thumb and index apart, so no pinch). Bottom: a chart of the thumb–index distance of a simulated hand that cannot close fully, pinching six times, with its personal make and break thresholds; all six pinches click with them, four with the standard thresholds](docs/images/hand-mode.png)
+*The hand network on public test photos (cropped to the hands), and the hand setup's personal pinch for a simulated hand that cannot close fully.*
 
 Everything else is shared with eye mode: the people on this computer (each with
 their own hand setup in `data/users/<id>/hand.json`), personal settings and
@@ -228,12 +253,20 @@ by `paralic/session.py` when the page connects with `/ws?mode=hand`.
   or glancing at the instructions are left out, and the page keeps a dot up until enough settled frames have
   arrived. A dot the eyes were never really on (closed, looking elsewhere) is spotted because the other dots
   predict it badly (leave-one-dot-out with a small ridge model) and is left out of training.
+
+  ![Left: one calibration dot recorded from simulated slow eyes, as two eye-feature traces over time; the recording is split where the eyes moved (still on the previous dot, on the dot, a glance at the text, back on the dot) and only the last steady stretch on the dot is used for training. Right: the 21 calibration dots on a screen; during three of them the eyes were on the instructions, and exactly those three are left out](docs/images/calibration-labels.png)
+  *Which frames and dots count, on simulated eyes run through the labelling code that training uses.*
+
 * **GazeNet** (`paralic/gazenet.py`) is a small multilayer perceptron written in NumPy: two tanh hidden
   layers (32 → 16) plus a linear skip connection that is initialised with ridge regression, trained with Adam
   and a Huber loss. The weight decay is chosen by *grouped cross-validation* (whole calibration dots are held
   out, so it measures how well the network interpolates to new screen positions) and three networks are
   averaged. The head-movement step of the calibration teaches it to compensate for head motion. Training
   takes about a second.
+
+  ![A screen with the 21 calibration dots as rings and 60 new test places as crosses, each with the trained network's estimate as a teal dot right next to it; a zoomed panel shows one fixation's eight per-frame estimates around their average, and the mean error is given as about 18 px for this simulated person, with the note that real webcams are off by about 1–3 cm](docs/images/calibration-accuracy.png)
+  *What a personal network learns from one calibration, for a simulated person: in simulation, not a real-world accuracy.*
+
 * **One-eye networks**: the same architecture trained on one eye's features plus the head pose. They keep the
   cursor moving during a wink and can lead for people whose other eye does not track reliably.
 * **Blink detection** (`paralic/blink.py`) combines MediaPipe's blink blendshapes with the eyelid geometry,
@@ -259,6 +292,10 @@ by `paralic/session.py` when the page connects with `/ws?mode=hand`.
   than a new view of this person's own face"; a face is theirs below 3 and when clearly closer to them than to
   anyone else. On public test faces (altered in angle, scale, light and sharpness) it recognised every enrolled
   face and turned every stranger away.
+
+  ![Left: the 478-point face mesh of the test portrait drawn as a wireframe in the face's own frame, with the 47 points of the face print highlighted and the face's axes drawn from between the eyes. Right: scores of new views against the stored prints on a log scale; views of a person's own face score around 1, nearly all below the recognition limit of 3, while other enrolled people and strangers score above 10](docs/images/faceprint.png)
+  *The face print on public test faces: only landmarks and scores are drawn, no photo.*
+
 * In the page (`web/js/gaze.js`, `web/js/motion.js`) the cursor glides at 60 fps on a critically damped spring,
   rests on the average of each fixation, can be nudged with small head tilts, snaps to the nearest button, and
   each click slightly corrects any drift (you can turn this off in Settings).
@@ -288,6 +325,9 @@ blink sensitivity (Personal) · scroll speed · learn from clicks (drift correct
 (fine-tuning) · cursor size · camera preview · sounds · speaking speed.
 Missed double blinks → run the blink test, or *Relaxed* speed / *High* sensitivity. Unwanted clicks → *Low*
 sensitivity or *Fast*, or switch to dwell click.
+
+![The Settings page, “Make it yours”: Cursor movement for Sam with Glide, Balanced and Snappy, Hold still while you look on or off, and Head nudge off, slow, normal or fast; the gaze cursor rests on Glide, which lights up](docs/images/screenshot-settings.png)
+*Settings are large buttons too: look at an option and blink twice (mouse demo mode).*
 
 ## Troubleshooting
 
@@ -366,6 +406,11 @@ slow and glancing eyes, quick adjust after sitting differently, model search, fi
 bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B decisions) and writes
 [docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people. `python tools/faceprint_eval.py`
 checks the face print on public test faces and writes [docs/faceprint.md](docs/faceprint.md).
+
+`python tools/make_figures.py` regenerates the screenshots and figures in `docs/images/` (about a minute, fixed
+seeds; `--only NAME` for one, `--list` for the names): screenshots of the mouse demo mode taken with Playwright,
+and figures computed with Paralic's own code on simulated people, the numbers in `docs/benchmark.md`, and the
+public test photos (only landmarks and scores of faces are drawn, never a face photo).
 
 ## License
 
