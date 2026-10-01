@@ -16,6 +16,58 @@ let text = '';
 let mode = 'phrases';
 let group = 0;
 
+// The words this person uses, and which word they use after which, kept in
+// this browser: their own words come first in the suggestions.
+const MEMORY_KEY = 'paralic.words';
+const MEMORY_MAX = 600;
+let memory = loadMemory();
+
+function loadMemory() {
+  try {
+    const m = JSON.parse(localStorage.getItem(MEMORY_KEY) || 'null');
+    if (m && typeof m.uni === 'object' && typeof m.bi === 'object') return m;
+  } catch {
+    /* private window or damaged: start afresh */
+  }
+  return { uni: {}, bi: {} };
+}
+
+function saveMemory() {
+  try {
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(memory));
+  } catch {
+    /* not kept: suggestions still work */
+  }
+}
+
+function prune(counts) {
+  const keys = Object.keys(counts);
+  if (keys.length <= MEMORY_MAX) return;
+  keys.sort((a, b) => counts[a] - counts[b]).slice(0, keys.length - MEMORY_MAX).forEach((k) => delete counts[k]);
+}
+
+/** Remember the words of a finished sentence part (called when a word is completed). */
+export function learnWords(t) {
+  const words = (t.toLowerCase().match(/[a-z']+/g) || []).slice(-2);
+  if (!words.length) return;
+  const [prev, word] = words.length === 2 ? words : [null, words[0]];
+  memory.uni[word] = (memory.uni[word] || 0) + 1;
+  if (prev) {
+    const next = memory.bi[prev] || (memory.bi[prev] = {});
+    next[word] = (next[word] || 0) + 1;
+    prune(next);
+  }
+  prune(memory.uni);
+  prune(memory.bi);
+  saveMemory();
+}
+
+/** Own words first (most used first), then the built-in list, without repeats. */
+function ranked(own, builtIn) {
+  const mine = Object.keys(own || {}).sort((a, b) => own[b] - own[a]);
+  return [...new Set([...mine, ...builtIn])];
+}
+
 function sentenceStart(t) {
   return /^\s*$/.test(t) || /[.?!]\s*$/.test(t);
 }
@@ -35,10 +87,12 @@ export function predict(current) {
     if (!current.trim()) return STARTERS;
     // No partial word: suggest likely *next* words from the previous word.
     const lastWord = (before.trim().match(/([A-Za-z']+)[\s.,?!]*$/) || [, ''])[1].toLowerCase();
-    const next = (NEXT[lastWord] || ['the', 'to', 'you', 'please', 'and', 'a', 'is', 'it']).slice(0, 4);
+    const builtIn = NEXT[lastWord] || ['and', 'please', 'the', 'is', 'to', 'you', 'a', 'it'];
+    const next = ranked(memory.bi[lastWord], builtIn).filter((w) => w !== lastWord).slice(0, 4);
     return atStart ? next.map(capitalise) : next.map(fixI);
   }
-  const matches = WORDS.filter((w) => w.startsWith(prefix) && w !== prefix).slice(0, 4);
+  const own = Object.fromEntries(Object.entries(memory.uni).filter(([w]) => w.startsWith(prefix) && w !== prefix));
+  const matches = ranked(own, WORDS.filter((w) => w.startsWith(prefix) && w !== prefix)).slice(0, 4);
   return matches.map((w) => (atStart ? capitalise(w) : fixI(w)));
 }
 
@@ -112,6 +166,7 @@ export default {
         const b = h('button', { class: 'suggestion', type: 'button', disabled: !w }, w || '');
         if (w) b.addEventListener('click', () => {
           text = text.replace(/[A-Za-z']*$/, '') + w + ' ';
+          learnWords(text);
           update();
         });
         suggestionsRow.append(b);
@@ -124,6 +179,7 @@ export default {
     };
 
     const type = (ch) => {
+      if (/[A-Za-z']$/.test(text) && (ch === ',' || ch === '.' || ch === '?')) learnWords(text);
       if (ch === ',' || ch === '.' || ch === '?') text = `${text.replace(/\s+$/, '')}${ch} `;
       else if (ch === "'") text += "'";
       else text += sentenceStart(text) ? ch.toUpperCase() : ch.toLowerCase();
@@ -148,7 +204,11 @@ export default {
       const rows = ROWS.map((row) => h('div', { class: 'key-row' },
         [...row].map((ch) => key(ch, () => type(ch)))));
       const special = h('div', { class: 'key-row special' },
-        key('Space', () => { text += ' '; update(); }, 'small-text', `${icon('space')}<span>Space</span>`),
+        key('Space', () => {
+          if (/[A-Za-z']$/.test(text)) learnWords(text);
+          text += ' ';
+          update();
+        }, 'small-text', `${icon('space')}<span>Space</span>`),
         key('Delete', () => { text = text.slice(0, -1); update(); }, 'small-text', `${icon('del')}<span>Delete</span>`),
         key('Delete word', deleteWord, 'small-text', `${icon('del')}<span>Word</span>`),
         key('Clear', () => { text = ''; update(); }, 'small-text', `${icon('trash')}<span>Clear</span>`),

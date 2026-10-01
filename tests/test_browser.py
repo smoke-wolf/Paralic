@@ -599,3 +599,32 @@ def test_camera_flow(browser, tmp_path):
         ctx.close()
         server.should_exit = True
         thread.join(timeout=5)
+
+
+def test_talk_suggestions_follow_each_word(page):
+    """Picking a suggested word offers words that follow it (they must change
+    every time), and the person's own word pairs come first next time."""
+    page.goto(page.url.split("#")[0] + "#/talk")
+    page.click("text=Keyboard")
+    words = lambda: page.eval_on_selector_all(".suggestion", "els => els.map(e => e.textContent)")  # noqa: E731
+    page.evaluate("localStorage.removeItem('paralic.words')")
+    assert words()[0] == "I"
+    seen = [words()]
+    for pick in ("I", "need", "help"):
+        page.locator(".suggestion", has_text=pick).first.click()
+        page.wait_for_timeout(150)
+        seen.append(words())
+    assert page.locator(".text-display").inner_text().strip() == "I need help"
+    assert all(a != b for a, b in zip(seen, seen[1:])), seen
+    assert seen[1][:2] == ["am", "need"] and seen[3][0] == "me"
+    # Typed words count too: after typing "I need water", "water" follows "need".
+    page.locator(".key[aria-label='Clear']").click()
+    for pick in ("I", "need"):
+        page.locator(".suggestion", has_text=pick).first.click()
+    for ch in "WATER":
+        page.locator(f".key:text-is('{ch}')").click()
+    page.locator(".key[aria-label='Space']").click()
+    page.locator(".key[aria-label='Clear']").click()
+    for pick in ("I", "need"):
+        page.locator(".suggestion", has_text=pick).first.click()
+    assert words()[:2] == ["help", "water"] or words()[:2] == ["water", "help"]
