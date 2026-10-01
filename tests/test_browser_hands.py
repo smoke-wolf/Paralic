@@ -7,8 +7,9 @@ person would, watching the page to see what it asks for, and checks what the
 page does. The camera is Chromium's fake webcam (its picture is ignored).
 
 The first visit runs the whole hand setup and then browses by hand; the second
-(a new browser profile, same data) is welcomed back and re-points. A short
-test checks that hand mode waits while its model downloads.
+(a new browser profile, same data) is welcomed back and re-points. Two short
+tests check that hand mode waits while its model downloads, and that a dropped
+connection cannot leave the hand setup stuck.
 
 Skipped automatically when Playwright or a Chromium build is not available.
 """
@@ -472,3 +473,43 @@ def test_hand_mode_waits_for_the_hand_model(browser, tmp_path):
         server.should_exit = True
         thread.join(timeout=5)
 
+
+def test_a_dropped_connection_cannot_leave_the_hand_setup_stuck(browser, tmp_path, monkeypatch):
+    from paralic.server import create_app
+    from paralic.session import TrackerSession
+
+    asked, answer = threading.Event(), threading.Event()
+    start = TrackerSession._cmd_hand_calibration_start
+
+    def stalled_start(self, cmd):                  # the server stops answering (it is restarting, say)
+        asked.set()
+        answer.wait(10)
+        return start(self, cmd)
+
+    monkeypatch.setattr(TrackerSession, "_cmd_hand_calibration_start", stalled_start)
+    pose = Pose()
+    pose.set(visible=True, fingers="spread")
+    app = create_app(data_dir=tmp_path, tracker_factory=None,
+                     hand_tracker_factory=lambda: ScriptedHandTracker(pose))
+    server, thread, url = _serve(app)
+    try:
+        with visit(browser, url) as pg:
+            assert asked.wait(30)                  # the first hand setup is starting...
+            pg.evaluate("window.paralic.tracker.ws.close()")         # ...when the connection drops
+            answer.set()
+            # The setup stops with a message, and the hand still moves the cursor:
+            # without a setup, the (mirrored) fingertip itself.
+            pg.wait_for_selector(".toast >> text=The hand setup stopped", timeout=10000)
+            pg.wait_for_function("window.paralic.state.calibrated && window.paralic.tracker.connected",
+                                 timeout=10000)
+            pose.set(fingers="curled")
+            x, y, _ = pg.evaluate(EMPTY_SPOT)
+            fx, fy = pg.evaluate(TO_SCREEN, [x, y])
+            pose.set(tip=(1.0 - fx, fy))
+            at = poll(pg, lambda: cursor_at(pg), lambda p: p is not None and math.dist(p, (x, y)) < 60)
+            assert at is not None and math.dist(at, (x, y)) < 60, (at, (x, y))
+            assert pg.errors == []
+    finally:
+        answer.set()
+        server.should_exit = True
+        thread.join(timeout=5)
