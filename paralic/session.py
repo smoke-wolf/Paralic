@@ -50,6 +50,7 @@ from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDet
 from .calibration import (FIXATION_KINDS, CalibrationData, CalibrationError, LabeledFrame, ProfileStore,
                           SettleTracker, calibrated_pose, evaluate_validation, fit_adjustment, fit_eye_models,
                           fit_full_calibration)
+from .faceprint import MIN_SAMPLES, FaceRecognizer, FaceSample, choose_samples, make_sample
 from .features import extract_features, face_lighting, mesh_overlay, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
@@ -110,6 +111,18 @@ _GESTURE_FLAGS = ("dwell", "left_forced", "right_forced", "hold_still", "head_nu
 
 # Point numbers of the extra dots of accuracy-improving round n start at n * this.
 REFINE_POINT_BASE = 1000
+
+# Face print (see faceprint.py): how often a frame is described, how many
+# frames a recognition looks at, how often the print may grow, when it is saved.
+FACE_SAMPLE_GAP_S = 0.25
+FACE_WINDOW = 6
+FACE_LEARN_GAP_S = 2.0
+FACE_SAVE_GAP_S = 10.0
+FACE_CHECK_GAP_S = 6.0
+FACE_LOST_S = 1.0
+# A frame joins a ready print when it is at least this unlike the stored ones
+# (in units of the person's typical difference).
+FACE_NOVEL = 1.0
 
 # Reply message type of each command, so failures reach the same handler in the
 # browser as successes (the page waits for these types).
@@ -214,6 +227,22 @@ class TrackerSession:
         # An accuracy-improving round in progress: the model before it, the
         # round number and where its extra dots' point numbers start.
         self._refine: Optional[dict] = None
+        # Face prints: everyone's (loaded when first needed), the recogniser
+        # built from them, a recognition in progress. `_face_trust`: whose face
+        # the camera is following - set when the person chose themselves,
+        # calibrated or was recognised, and kept only while the face stays in
+        # view (losing it may mean someone else sits down). Only then are new
+        # frames learned, so a print never takes in someone else's face.
+        self._prints: Optional[dict[str, list[FaceSample]]] = None
+        self._recognizer: Optional[FaceRecognizer] = None
+        self._face_next = 0.0
+        self._face_window: Optional[dict] = None
+        self._face_trust: Optional[str] = None
+        self._face_seen = 0.0
+        self._face_last_add = 0.0
+        self._face_dirty_since = 0.0
+        self._face_recent: deque = deque(maxlen=4)
+        self._face_check = {"next": 0.0, "hits": 0, "quiet_until": 0.0}
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
@@ -249,6 +278,7 @@ class TrackerSession:
     def close(self) -> None:
         with self._lock:
             self._save_if_dirty()
+            self._save_face()
             if self._tracker is not None:
                 self._tracker.close()
                 self._tracker = None
@@ -351,6 +381,7 @@ class TrackerSession:
             "accuracy_px": self.profile_meta.get("accuracy_px"),
             "pose": calibrated_pose(self.data),
             "legacy": bool(self.model is not None and self.model.meta.get("legacy")),
+            "faceprint": self.faceprint_view(),
             "ft_events": len(events),
             "ft_new_events": sum(1 for frames in events.values() if frames[0].t > trained_ts),
             "finetune_jobs": (p.get("finetune") or {}).get("jobs", [])[-8:],
@@ -408,10 +439,15 @@ class TrackerSession:
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
+        face_events: list[dict] = []
         features = raw = None
         winking = None
 
         if obs is None:
+            if t - self._face_seen > FACE_LOST_S:
+                # The face left the camera: whoever comes back must be recognised again.
+                self._face_trust = None
+                self._face_recent.clear()
             events: list = self.blink.update_missing(t)
             events += self.wink.update_missing(t)
             if self.wink.winking is None:
@@ -420,6 +456,7 @@ class TrackerSession:
             msg.update(face=False, gaze=_xy(gaze), raw=None, frozen=frozen, labeled=False)
             closing = False
         else:
+            self._face_seen = t
             feats = extract_features(obs.points_px, obs.image_size, obs.blendshapes, obs.matrix)
             features = feats.vector
             cl, cr = feats.closure_left, feats.closure_right
@@ -505,14 +542,30 @@ class TrackerSession:
                 msg["eyes"] = overlay_points(obs.points_px, obs.image_size, feats)
             if header.get("mesh"):
                 msg["mesh"] = mesh_overlay(obs.points_px, obs.image_size)
+            if t >= self._face_next and self._face_wanted(t):
+                self._face_next = t + FACE_SAMPLE_GAP_S
+                if not closing and max(cl, cr) < 0.45 and abs(feats.yaw_deg) <= 30 and abs(feats.pitch_deg) <= 25:
+                    try:
+                        sample = make_sample(rgb, obs.points_px, feats.yaw_deg, feats.pitch_deg, self.wall())
+                    except Exception:  # a face print must never break tracking
+                        log.debug("Face description failed", exc_info=True)
+                        sample = None
+                    if sample is not None:
+                        face_events.extend(self._face_frame(sample, t))
 
         self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze,
                                           features=None if features is None else features.copy(),
                                           raw=raw, wall=self.wall(), winking=winking))
+        w = self._face_window
+        if w is not None and t >= w["until"]:
+            face_events.append(self._finish_face_window())
+        if self._face_dirty_since and t - self._face_dirty_since >= FACE_SAVE_GAP_S:
+            self._save_face()
         msg["ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         msg["fps"] = self._fps()
         out = [msg]
         out.extend(self._event_message(ev, frame_id, gaze) for ev in events)
+        out.extend(face_events)
         return out
 
     # -- gaze prediction ---------------------------------------------------------
@@ -656,6 +709,7 @@ class TrackerSession:
     def _cmd_calibration_start(self, cmd: dict) -> list[dict]:
         mode = cmd.get("mode", "full")
         self._settle.reset()
+        self._face_trust = self.user["id"]           # calibrating as themselves
         if mode in ("adjust", "refine") and self.model is None:
             return [{"type": "calibration_started", "ok": False, "error": "No calibration to improve"}]
         if mode == "adjust":
@@ -809,6 +863,9 @@ class TrackerSession:
 
     def _switch_user(self, user: dict) -> None:
         self._save_if_dirty()
+        self._save_face()
+        self._face_trust = None
+        self._face_recent.clear()
         self.user = user
         self.personal = self.users.load_personal(user["id"])
         self.model = None
@@ -829,10 +886,12 @@ class TrackerSession:
 
     def _cmd_user_select(self, cmd: dict) -> list[dict]:
         self._switch_user(self.users.select(str(cmd.get("id"))))
+        self._face_trust = self.user["id"]            # they picked themselves
         return self._users_reply()
 
     def _cmd_user_create(self, cmd: dict) -> list[dict]:
         self._switch_user(self.users.create(cmd.get("name")))
+        self._face_trust = self.user["id"]
         return self._users_reply()
 
     def _cmd_user_rename(self, cmd: dict) -> list[dict]:
@@ -845,10 +904,195 @@ class TrackerSession:
     def _cmd_user_delete(self, cmd: dict) -> list[dict]:
         user_id = str(cmd.get("id"))
         self.users.delete(user_id)
+        if self._prints is not None:
+            self._prints.pop(user_id, None)
+        self._recognizer = None
         if user_id == self.user["id"]:
             self._unsaved_events = 0  # nothing left to save for them
             self._switch_user(self.users.ensure_active())
         return self._users_reply()
+
+    # -- face print ----------------------------------------------------------------------------
+    def _face_enabled(self) -> bool:
+        return bool((self.personal.get("faceprint") or {}).get("enabled", True))
+
+    def _all_prints(self) -> dict[str, list[FaceSample]]:
+        if self._prints is None:
+            self._prints = {}
+            for u in self.users.list():
+                samples = self.users.face_store(u["id"]).load()
+                if samples:
+                    self._prints[u["id"]] = samples
+        return self._prints
+
+    def _face_recognizer(self) -> Optional[FaceRecognizer]:
+        if self._recognizer is None:
+            ready = {u: s for u, s in self._all_prints().items() if len(s) >= MIN_SAMPLES}
+            self._recognizer = FaceRecognizer(ready) if ready else None
+        return self._recognizer
+
+    def _face_wanted(self, t: float) -> bool:
+        """Describe this frame's face? (Recognising, learning, or checking who is there.)"""
+        if self._face_window is not None:
+            return True
+        if not self._face_enabled():
+            return False
+        if self._face_trust == self.user["id"]:
+            return t - self._face_last_add >= FACE_LEARN_GAP_S
+        # Not sure whose face this is: look now and then (see _check_face).
+        return t >= self._face_check["next"] and self._face_recognizer() is not None
+
+    def _face_frame(self, sample: FaceSample, t: float) -> list[dict]:
+        out = []
+        w = self._face_window
+        if w is not None:
+            w["samples"].append(sample)
+            if len(w["samples"]) >= FACE_WINDOW:
+                out.append(self._finish_face_window())
+        self._face_recent.append(sample)
+        if self._face_enabled():
+            self._learn_face(sample, t)
+            event = self._check_face(t)
+            if event:
+                out.append(event)
+        return out
+
+    def _names(self) -> dict[str, str]:
+        return {u["id"]: u["name"] for u in self.users.list()}
+
+    def _finish_face_window(self) -> dict:
+        w, self._face_window = self._face_window, None
+        rec = self._face_recognizer()
+        if rec is None or not w["samples"]:
+            result = {"user": None, "confident": False, "scores": {},
+                      "reason": "no face prints yet" if rec is None else "no clear view of the face"}
+        else:
+            result = rec.identify(w["samples"])
+        if result.get("user"):
+            # Recognised: while this face stays in view it is theirs.
+            self._face_trust = result["user"]
+        names = self._names()
+        return {"type": "face_recognition", "ok": True, **result, "name": names.get(result.get("user")),
+                "frames": len(w["samples"]), "scores": {names.get(u, u): v for u, v in result.get("scores", {}).items()}}
+
+    def _learn_face(self, sample: FaceSample, t: float) -> None:
+        """Keep frames that are new for this person - only while the camera
+        follows their face (see ``_face_trust``)."""
+        uid = self.user["id"]
+        if self._face_trust != uid or t - self._face_last_add < FACE_LEARN_GAP_S:
+            return
+        prints = self._all_prints()
+        mine = prints.get(uid, [])
+        rec = None
+        if len(mine) < MIN_SAMPLES:
+            # Starting a print: frames that differ (pose, light) from the ones kept so far.
+            if mine and min(abs(sample.yaw - s.yaw) + abs(sample.pitch - s.pitch) + abs(sample.light - s.light) / 4
+                            for s in mine) < 3.0:
+                return
+        else:
+            rec = self._face_recognizer()
+            if rec is not None and uid in rec.prints:
+                if rec.novelty(sample, uid) < FACE_NOVEL:
+                    return          # nothing new
+                if rec.relative_scores([sample]).get(uid, 0.0) > 12.0:
+                    return          # far too unlike them: a tracking glitch, not a new look
+        prints[uid] = choose_samples(mine, sample, rec.metric if rec else None)
+        self._face_last_add = t
+        self._face_dirty_since = self._face_dirty_since or t
+        self._recognizer = None
+
+    def _check_face(self, t: float) -> Optional[dict]:
+        """While unsure whose face this is, look every few seconds: the current
+        person (then trust it again), or someone else with a face print?"""
+        c = self._face_check
+        if self._face_trust is not None or t < c["next"]:
+            return None
+        c["next"] = t + FACE_CHECK_GAP_S
+        rec = self._face_recognizer()
+        if rec is None or len(self._face_recent) < 3:
+            return None
+        result = rec.identify(list(self._face_recent))
+        other = result.get("user")
+        if other == self.user["id"]:
+            # Trusting the face again lets it be learned: ask for a close match.
+            if rec.identify(list(self._face_recent), strict=True).get("user") == other:
+                self._face_trust = other
+            c["hits"] = 0
+            return None
+        if other:
+            c["hits"] += 1
+        else:
+            c["hits"] = 0
+        if c["hits"] >= 2 and t >= c["quiet_until"]:
+            c["hits"] = 0
+            c["quiet_until"] = t + 60.0
+            return {"type": "face_changed", "user": other, "name": self._names().get(other)}
+        return None
+
+    def _save_face(self) -> None:
+        if not self._face_dirty_since or self._prints is None:
+            return
+        self._face_dirty_since = 0.0
+        uid = self.user["id"]
+        try:
+            with self.users.lock_for(uid):
+                self.users.face_store(uid).save(self._prints.get(uid, []))
+        except OSError:
+            log.warning("Could not save the face print", exc_info=True)
+
+    def _forget_face(self) -> None:
+        uid = self.user["id"]
+        self.users.face_store(uid).forget()
+        if self._prints is not None:
+            self._prints.pop(uid, None)
+        self._recognizer = None
+        self._face_dirty_since = 0.0
+
+    def faceprint_view(self) -> dict:
+        n = len(self._all_prints().get(self.user["id"], []))
+        return {"enabled": self._face_enabled(), "samples": n, "ready": n >= MIN_SAMPLES}
+
+    def _cmd_face_recognize(self, cmd: dict) -> list[dict]:
+        if self._face_recognizer() is None:
+            return [{"type": "face_recognition", "ok": True, "user": None, "confident": False, "scores": {},
+                     "reason": "no face prints yet"}]
+        seconds = float(np.clip(float(cmd.get("seconds", 4.0)), 1.0, 10.0))
+        self._face_window = {"samples": [], "until": self.clock() + seconds}
+        self._face_next = 0.0
+        return []      # the answer (face_recognition) comes with the frames
+
+    def _cmd_face_confirm(self, cmd: dict) -> list[dict]:
+        """The person at the camera said they are the current person (e.g. chose to go on as them)."""
+        self._face_trust = self.user["id"]
+        return [{"type": "face_confirmed", "ok": True}]
+
+    def _cmd_faceprint_set(self, cmd: dict) -> list[dict]:
+        enabled = cmd.get("enabled")
+        if not isinstance(enabled, bool):
+            raise PersonalizationError("enabled must be true or false")
+        self.personal["faceprint"] = {"enabled": enabled}
+        if not enabled:
+            self._forget_face()
+        self._save_personal()
+        return [{"type": "personal", "ok": True, "personal": self.personal_view()}]
+
+    def _cmd_faceprint_forget(self, cmd: dict) -> list[dict]:
+        self._forget_face()
+        return [{"type": "personal", "ok": True, "personal": self.personal_view()}]
+
+    def _cmd_faceprint_faces(self, cmd: dict) -> list[dict]:
+        """The kept faces of the current person (small grey JPEGs) for the Lab page."""
+        import base64
+
+        self._save_face()
+        store = self.users.face_store(self.user["id"])
+        faces = []
+        for s in self._all_prints().get(self.user["id"], []):
+            pic = store.picture(s.id)
+            if pic:
+                faces.append({"id": s.id, "t": round(s.t), "yaw": round(s.yaw), "pitch": round(s.pitch),
+                              "src": "data:image/jpeg;base64," + base64.b64encode(pic).decode("ascii")})
+        return [{"type": "faceprint_faces", "ok": True, "faces": faces}]
 
     # -- learning from use ---------------------------------------------------------------------
     def _find_record(self, frame_id) -> Optional[int]:

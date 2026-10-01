@@ -264,6 +264,7 @@ class App {
       'wink_calibration_result', 'experiment_result', 'personal', 'experiment_plan']) {
       this.tracker.on(type, (m) => m && m.personal && this.setPersonal(m.personal));
     }
+    this.tracker.on('face_changed', (m) => this.offerSwitch(m));
     this.tracker.on('finetune_result', (m) => {
       if (m.personal) this.setPersonal(m.personal);
       if (m.ok && m.accepted) {
@@ -463,13 +464,60 @@ class App {
     card.remove();
     this.camera.setVisible(getSettings().showCamera);
 
-    // Several people use this computer: ask who it is first.
-    if ((this.state.people || []).length > 1) await this.pickPerson(ov);
-    await this.enterAsPerson(ov);
+    // Who is it? Recognised by their face print - else, when several people
+    // use this computer, ask.
+    const known = await this.recognise(ov);
+    if (!known && (this.state.people || []).length > 1) await this.pickPerson(ov);
+    await this.enterAsPerson(ov, known);
   }
 
-  /** Load the current person's calibration and offer to use, adjust or redo it. */
-  async enterAsPerson(ov) {
+  /** Recognise the person at the camera from the face prints and switch to
+   *  them. Resolves to their name, or null when unsure (or no prints yet). */
+  async recognise(ov) {
+    if (this.state.simulated || !(this.state.people || []).some((u) => u.face)) return null;
+    const card = h('div', { class: 'overlay-card' },
+      h('div', { class: 'eyebrow' }, 'Face print'), h('h2', {}, 'Recognising you…'), h('div', { class: 'spinner' }));
+    ov.append(card);
+    try {
+      const r = await this.tracker.request({ type: 'face_recognize' }, 'face_recognition', 9000).catch(() => null);
+      if (!r || !r.user) return null;
+      if (!this.state.person || this.state.person.id !== r.user) {
+        this.applyUsersReply(await this.tracker.request({ type: 'user_select', id: r.user }, 'users'));
+      }
+      return r.name || (this.state.person ? this.state.person.name : null);
+    } finally {
+      card.remove();
+    }
+  }
+
+  /** Someone else with a face print sat down: offer to switch to them. */
+  offerSwitch(m) {
+    if (!m || !m.user || !m.name || this.calibrator.running || this.state.simulated) return;
+    document.querySelector('.face-banner')?.remove();
+    const yes = h('button', { class: 'btn primary', type: 'button', html: `${icon('head')}<span>Switch to ${esc(m.name)}</span>` });
+    const no = h('button', { class: 'btn', type: 'button' }, 'No');
+    const banner = h('div', { class: 'face-banner', role: 'alert' }, h('span', {}, `Is that ${m.name}?`), yes, no);
+    document.body.append(banner);
+    const timer = setTimeout(() => banner.remove(), 15000);
+    no.addEventListener('click', () => { clearTimeout(timer); banner.remove(); });
+    yes.addEventListener('click', async () => {
+      clearTimeout(timer);
+      banner.remove();
+      const ov = this.openOverlay('solid');
+      try {
+        this.applyUsersReply(await this.tracker.request({ type: 'user_select', id: m.user }, 'users'));
+        this.state.calibrated = false;
+        await this.enterAsPerson(ov, m.name);
+      } catch (err) {
+        this.closeOverlay(ov);
+        toast(`Could not switch: ${err.message || err}`, 'bad');
+      }
+    });
+  }
+
+  /** Load the current person's calibration and offer to use, adjust or redo it.
+   *  `recognised`: their name when the face print recognised them. */
+  async enterAsPerson(ov, recognised = null) {
     for (;;) {
       const p = await this.tracker.request({ type: 'profile_load' }, 'profile', 15000).catch(() => ({ loaded: false }));
       if (!p.loaded) {
@@ -483,7 +531,7 @@ class App {
       this.gaze.setActive(true);
       const name = this.state.person ? this.state.person.name : '';
       const choice = await this.choose(ov, {
-        title: name ? `Welcome back, ${name}!` : 'Welcome back!',
+        title: recognised ? `Hello, ${recognised}! I recognised you.` : name ? `Welcome back, ${name}!` : 'Welcome back!',
         subtitle: p.legacy
           ? 'Your calibration comes from an older version of Paralic. It still works, but a new full calibration will be more accurate.'
           : 'Your saved calibration is loaded. Look at an option and blink twice.',
@@ -496,8 +544,11 @@ class App {
       });
       if (choice === 'switch') {
         await this.pickPerson(ov);
+        recognised = null;
         continue;
       }
+      // Going on as this person: their face may now be learned for the face print.
+      this.tracker.send({ type: 'face_confirm' });
       this.closeOverlay(ov);
       if (choice !== 'browse') await this.calibrate(choice);
       this.welcome();

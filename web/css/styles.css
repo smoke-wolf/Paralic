@@ -1013,6 +1013,12 @@ body.gaze-dragging [data-dropzone].drop-hover,
 .lab-card h3 { display: flex; align-items: center; gap: 10px; margin-top: 0; }
 .lab-card h3 svg { width: 28px; height: 28px; color: var(--accent); }
 .lab-wide { grid-column: 1 / -1; }
+.face-gallery { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.face-gallery img { width: 56px; height: 56px; border-radius: 10px; object-fit: cover; filter: grayscale(1); opacity: 0.9; }
+/* "Is that NAME?" when someone else with a face print sits down. */
+.face-banner { position: fixed; z-index: 2500; left: 50%; bottom: 6vh; translate: -50% 0; display: flex; gap: 14px;
+  align-items: center; padding: 14px 18px; border-radius: 18px; background: #1f2b52; border: 1px solid var(--line);
+  box-shadow: var(--shadow); font-weight: 650; }
 .lab-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 6px 0 14px; }
 .lab-stat { padding: 12px 14px; border-radius: var(--radius-sm); background: rgba(255, 255, 255, 0.04); border: 1px solid var(--line); }
 .lab-stat b { display: block; font-size: 1.25rem; }

@@ -70,7 +70,12 @@ web's). Each person's network is trained on its own platform's features, so this
     dots on which the previous and the new network are compared (`calibration_start` mode `refine`,
     `validation_finish`); the loser's extra dots are dropped. Dots the eyes were not on are left out of every
     fit (`suspect_dots`: leave-one-dot-out ridge residual > 3 × median and > 120 px, at most 25 %).
-13. **Cursor motion** (`web/js/motion.js`, per person): critically damped spring glide (ω = 9.5 / 17 / 30),
+13. **Face print** (`faceprint.py`): per-person views of the face (47 rigid mesh points in a face-fixed frame
+    + LBP texture of the eye-aligned face), compared with a cross-validated learned metric (within-person
+    whitening, discriminant directions, channel weights); recognition at start-up, "Is that NAME?" when
+    someone else sits down, new views learned only while the camera keeps following a confirmed face. macOS
+    has no face print; Vision's 76-point landmarks would need their own rigid-point list.
+14. **Cursor motion** (`web/js/motion.js`, per person): critically damped spring glide (ω = 9.5 / 17 / 30),
     "hold still while you look" (a running, then 0.6 s moving, average per fixation; a new fixation after
     two samples outside the radius), and the head nudge (joystick past a dead zone, signs learned by a
     head-direction check, the gaze point held still while nudging).

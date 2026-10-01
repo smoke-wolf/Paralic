@@ -468,6 +468,8 @@ def test_camera_flow(browser, tmp_path):
         pg.wait_for_timeout(1500)
         assert pg.evaluate("!document.querySelector('#gaze-cursor').hidden")
         assert pg.evaluate("window.paralic.state.calibrated")
+        # Calibrating as themselves started the person's face print.
+        assert pg.evaluate("window.paralic.state.personal.faceprint.samples") >= 1
         assert errors == []
     finally:
         ctx.close()

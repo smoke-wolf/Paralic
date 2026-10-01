@@ -147,7 +147,37 @@ function overview(el, app) {
   experiments.append(list);
   if (app.state.simulated) experiments.append(h('p', { class: 'muted' }, 'In mouse demo mode only the button magnet changes anything.'));
 
-  el.append(h('div', { class: 'lab-grid' }, model, blinks, winks, experiments));
+  // -- face print -----------------------------------------------------------------------
+  const fp = view.faceprint || { enabled: false, samples: 0, ready: false };
+  const face = h('section', { class: 'card lab-card' },
+    h('h3', { html: `${icon('head')}<span>Face print</span>` }));
+  if (app.state.simulated) {
+    face.append(h('p', { class: 'muted' }, 'Demo mode has no camera, so no face print.'));
+  } else if (!fp.enabled) {
+    face.append(h('p', { class: 'muted' }, 'Off: Paralic does not recognise your face. Switch it on in Settings.'));
+  } else {
+    face.append(h('div', { class: 'lab-stats' },
+      stat(String(fp.samples), 'different views kept'),
+      stat(fp.ready ? 'Yes' : 'Not yet', 'recognises you')),
+      h('p', { class: 'muted' }, fp.ready
+        ? 'New views (another head pose, other light) are added while you use Paralic, so it keeps getting better at knowing you. Kept on this computer only.'
+        : 'Paralic is collecting a few different views of your face while you use it. Kept on this computer only.'));
+    const gallery = h('div', { class: 'face-gallery' });
+    face.append(gallery);
+    app.tracker.request({ type: 'faceprint_faces' }, 'faceprint_faces', 8000).then((r) => {
+      for (const f of (r.faces || []).slice(-24)) gallery.append(h('img', { src: f.src, alt: 'A kept view of your face' }));
+    }).catch(() => {});
+    face.append(h('div', { class: 'btn-row' }, button('Forget my face', 'trash', async () => {
+      try {
+        await app.tracker.request({ type: 'faceprint_forget' }, 'personal', 8000);
+        toast('Your face print is deleted. A new one starts the next time you use Paralic.', 'ok', 6000);
+      } catch (err) {
+        toast(err.message, 'bad');
+      }
+    }, 'danger')));
+  }
+
+  el.append(h('div', { class: 'lab-grid' }, model, blinks, winks, face, experiments));
 }
 
 function button(label, ic, onClick, cls = '') {

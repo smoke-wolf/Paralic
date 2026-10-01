@@ -35,6 +35,23 @@ def portrait(width: int = 640) -> np.ndarray | None:
     return cv2.resize(img, (width, int(h * width / w)), interpolation=cv2.INTER_AREA)
 
 
+ASSETS_URL = "https://storage.googleapis.com/mediapipe-assets/"
+
+
+def face_image(name: str) -> np.ndarray | None:
+    """Another MediaPipe test image with a face (BGR, cached), or None offline."""
+    import cv2
+
+    path = CACHE / name
+    if not path.exists():
+        try:
+            CACHE.mkdir(exist_ok=True)
+            urllib.request.urlretrieve(ASSETS_URL + name, path)
+        except Exception:
+            return None
+    return cv2.imread(str(path))
+
+
 def close_eyes(img: np.ndarray, pts: np.ndarray,
                contours: tuple = (L.RIGHT_EYE_CONTOUR, L.LEFT_EYE_CONTOUR)) -> np.ndarray:
     """Paint the eyes in ``contours`` closed (both by default; pass one contour for a wink)."""

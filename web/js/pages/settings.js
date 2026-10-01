@@ -135,6 +135,17 @@ const MOTION_GROUPS = [
   },
 ];
 
+// Face print (per person): stored on this computer only.
+const FACE_GROUPS = [
+  {
+    key: 'faceprint', title: 'Recognise my face',
+    desc: 'Paralic keeps a face print — a few different views of your face, as numbers and small grey pictures, on this computer only — so it knows who is using it and opens your profile by itself. Off deletes it.',
+    options: [['true', 'On'], ['false', 'Off']],
+    get: (g, view) => String(!view.faceprint || view.faceprint.enabled !== false),
+    command: (v) => ({ type: 'faceprint_set', enabled: v === 'true' }),
+  },
+];
+
 export default {
   title: 'Settings',
   render(el, params, app) {
@@ -180,7 +191,8 @@ export default {
         b.addEventListener('click', async () => {
           const patch = g.set ? g.set(value) : { [g.key]: value };
           try {
-            const reply = await app.tracker.request({ type: 'gestures_set', gestures: patch }, 'personal', 8000);
+            const cmd = g.command ? g.command(value) : { type: 'gestures_set', gestures: patch };
+            const reply = await app.tracker.request(cmd, 'personal', 8000);
             if (reply.ok === false) throw new Error(reply.error);
           } catch (err) {
             toast(`Could not save: ${err.message}`, 'bad');
@@ -199,11 +211,12 @@ export default {
         actionBtn('Check head directions', 'head', () => app.calibrate('head'))));
     }
     section('Eye gestures', 'wink', GESTURE_GROUPS);
+    if (!app.state.simulated) section('Recognise me', 'head', FACE_GROUPS);
     const paintGestures = () => {
       const view = app.state.personal || {};
       const gs = view.gestures || {};
       for (const { g, opts, note } of gestureRows) {
-        const current = g.get ? g.get(gs) : String(gs[g.key]);
+        const current = g.get ? g.get(gs, view) : String(gs[g.key]);
         for (const b of opts.children) b.classList.toggle('selected', b.dataset.value === current);
         const tested = view.wink_profile && view.wink_profile[g.eye];
         if (g.eye && tested && !tested.ok && gs[g.key] !== 'off' && view.winks && !view.winks[g.eye]) {

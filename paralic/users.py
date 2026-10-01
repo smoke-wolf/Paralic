@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from .calibration import ProfileStore
+from .faceprint import FacePrintStore
 
 _ID_RE = re.compile(r"^u[0-9a-f]{8}$")
 MAX_NAME = 32
@@ -102,7 +103,7 @@ class UserStore:
         out = []
         for u in doc["users"]:
             store = self.profile_store(u["id"])
-            out.append({**u, "calibrated": store.exists()})
+            out.append({**u, "calibrated": store.exists(), "face": self.face_store(u["id"]).exists()})
         return out
 
     def active_id(self) -> Optional[str]:
@@ -189,6 +190,9 @@ class UserStore:
     def lock_for(self, user_id: str) -> threading.RLock:
         with self._lock:
             return self._user_locks.setdefault(user_id, threading.RLock())
+
+    def face_store(self, user_id: str) -> FacePrintStore:
+        return FacePrintStore(self.user_dir(user_id) / "faceprint")
 
     def profile_store(self, user_id: str) -> ProfileStore:
         return ProfileStore(self.user_dir(user_id) / "profile.json")

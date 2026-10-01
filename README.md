@@ -120,6 +120,14 @@ everything, chosen per person in **Settings → Eye gestures**:
   eye lead when the other one misleads (e.g. a squint that comes and goes). *Tracking eye* in Settings can also
   force one eye (an eye patch, a prosthetic eye).
 
+**Face print — Paralic knows who is using it** (per person, Settings → *Recognise my face*): while you use
+Paralic it keeps a few different views of your face (other head poses, other light) and recognises you the next
+time, opening your profile by itself ("Hello, Sam! I recognised you"); if someone else with a face print sits
+down it asks "Is that Alex?". When it is not sure it simply asks who you are. New views are only learned while
+the camera keeps following the face of the person who chose themselves (or was recognised), so a print never
+takes in someone else's face — and it keeps getting better. *Forget my face* (Lab page) deletes it; switching it
+off deletes it too. This is a convenience, not security: a photo would fool it.
+
 **Settings → Cursor movement** (per person):
 
 * **Cursor movement**: *Glide* / *Balanced* / *Snappy* — the cursor eases to where you look (it never jumps or
@@ -203,6 +211,18 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
   looking just before, so the double blink clicks the right thing.
 * **Screen coordinates:** the network predicts positions on your *monitor*; the page converts them into page
   coordinates, so leaving full screen or moving the window keeps the calibration usable.
+* **Face print** (`paralic/faceprint.py`): each kept view is described by *face deltas* — 47 face-mesh points that
+  expressions barely move (eye corners, nose, forehead, cheekbones, temples, jaw angles) in a frame fixed to the
+  face (origin between the eyes, axes from the eye line and the nose, lengths in eye distances), so head pose
+  and distance drop out — and by local-binary-pattern texture histograms of the face aligned by the eyes. They
+  are compared with a **learned matrix weighting**: the differences between one person's own views are pooled
+  into a covariance and inverted (whitening: what varies within a person counts little, what is steady counts a
+  lot), the directions that separate the enrolled people's mean faces get extra weight, and shape and texture
+  are weighted by how well each separates people. It is learned from the views themselves, cross-validated
+  (learned on part of each person's views, measured on the rest), so a score means "how many times further
+  than a new view of this person's own face"; a face is theirs below 3 and when clearly closer to them than to
+  anyone else. On public test faces (altered in angle, scale, light and sharpness) it recognised every enrolled
+  face and turned every stranger away.
 * In the page (`web/js/gaze.js`, `web/js/motion.js`) the cursor glides at 60 fps on a critically damped spring,
   rests on the average of each fixation, can be nudged with small head tilts, snaps to the nearest button, and
   each click slightly corrects any drift (you can turn this off in Settings).
@@ -226,7 +246,7 @@ real mouse keeps working as usual, which is handy for a helper).
 
 Per person: cursor movement (glide / balanced / snappy) · hold still while you look · head nudge and its
 speed (with a head-direction check) · what holding each eye closed does · short winks · closing both eyes ·
-dwell click and its time · wink hold time · tracking eye · wink and blink tests.
+dwell click and its time · wink hold time · tracking eye · wink and blink tests · recognise my face.
 In this browser: cursor smoothing (Auto = learned) · snap to buttons (Auto) · double-blink speed (Personal) ·
 blink sensitivity (Personal) · scroll speed · learn from clicks (drift correction) · keep learning my eyes
 (fine-tuning) · cursor size · camera preview · sounds · speaking speed.
@@ -248,9 +268,12 @@ sensitivity or *Fast*, or switch to dwell click.
 ## Privacy
 
 Video frames go only from your browser to the Python program on the same computer. They are analysed in
-memory and never stored or uploaded. The saved calibration contains numbers (eye/head measurements and the
-network's weights), no images. The server listens on `127.0.0.1` and only accepts pages served from this
-machine.
+memory and never uploaded. The saved calibration contains numbers (eye/head measurements and the network's
+weights), no images. **The face print is the one exception**: unless it is switched off (Settings → *Recognise
+my face*), up to 40 small grey pictures of the face (112 × 112, aligned by the eyes) and their numbers are kept
+in `data/users/<id>/faceprint/` on this computer, so the print can be rebuilt as the method improves. *Forget my
+face* or switching it off deletes them; deleting a person deletes everything of theirs. The server listens on
+`127.0.0.1` and only accepts pages served from this machine.
 
 ## Project layout
 
@@ -266,6 +289,7 @@ paralic/            Python package (server + eye tracking)
   filters.py        One Euro filter + blink-aware cursor stabiliser
   gazenet.py        GazeNet neural networks (NumPy MLP, Adam, cross-validation, ensemble, one-eye networks)
   calibration.py    calibration data, training, saved profile
+  faceprint.py      face print: face deltas, texture, the learned matrix weighting, recognising
   personalize.py    blink test, auto smoothing/magnet, champion/challenger fine-tuning, A/B statistics
   users.py          people and their files
   model_assets.py   model download
@@ -297,7 +321,8 @@ The MediaPipe integration tests download a public-domain test portrait on first 
 `python tools/benchmark.py` runs the personalisation benchmark on simulated people (calibration labels for
 slow and glancing eyes, quick adjust after sitting differently, model search, fine-tuning under drift and with
 bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B decisions) and writes
-[docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people.
+[docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people. `python tools/faceprint_eval.py`
+checks the face print on public test faces and writes [docs/faceprint.md](docs/faceprint.md).
 
 ## License
 
