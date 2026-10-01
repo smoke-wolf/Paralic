@@ -258,6 +258,10 @@ export default {
     }
 
     el.append(h('div', { class: 'btn-row', style: { marginTop: '10px' } },
+      app.state.simulated ? null : actionBtn(
+        (app.state.systemControl && app.state.systemControl.enabled) ? 'Stop controlling my computer' : 'Control my whole computer (beta)',
+        'mouse', () => app.toggleSystemControl(),
+        (app.state.systemControl && app.state.systemControl.enabled) ? 'primary' : ''),
       actionBtn('Full screen', 'grid', () => {
         const req = document.documentElement.requestFullscreen?.();
         if (!req) toast('Press F11 for full screen', 'warn');

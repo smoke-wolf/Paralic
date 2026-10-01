@@ -1136,3 +1136,11 @@ body.gaze-dragging [data-dropzone].drop-hover,
 .phrase-cats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
 .phrase-cats .chip { padding: 8px 14px; }
 .phrase-cats .chip .emoji { margin-right: 6px; }
+
+/* Whole-computer ("desktop control") ON banner. */
+.system-banner {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
+  padding: 10px 16px; text-align: center; font-size: 15px;
+  background: #b45309; color: #fff; box-shadow: 0 2px 10px rgba(0,0,0,.35);
+}
+.system-banner b { color: #ffe8c2; }

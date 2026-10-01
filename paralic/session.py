@@ -58,6 +58,8 @@ from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, bli
 from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, PersonalizationError, analyze_blinks,
                           analyze_experiment, experiment_arms, recommend_magnet, run_finetune, smoothing_params,
                           tune_smoothing)
+from .oscontrol import OSController
+from .system_control import SystemController
 from .tracker import FaceTracker, decode_image
 from .users import UnknownUser, UserStore
 
@@ -244,6 +246,9 @@ class TrackerSession:
         self._face_recent: deque = deque(maxlen=4)
         self._face_check = {"next": 0.0, "hits": 0, "quiet_until": 0.0}
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
+        # System-wide ("control my whole computer") desktop cursor control. Off
+        # by default; constructing the OSController is a safe no-op off macOS.
+        self.system = SystemController(OSController())
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
         self.screen: Optional[dict] = None
@@ -566,6 +571,18 @@ class TrackerSession:
         out = [msg]
         out.extend(self._event_message(ev, frame_id, gaze) for ev in events)
         out.extend(face_events)
+
+        # System-wide desktop control: move the real OS cursor to the gaze point,
+        # click on a double blink, scroll at the screen edges. Off unless the user
+        # turned it on (and Accessibility is granted); may auto-disable itself via
+        # its kill switches, in which case we tell the page.
+        if self.system.enabled:
+            g = None if gaze is None else (float(gaze[0]), float(gaze[1]))
+            res = self.system.update(t, g, obs is not None)
+            if self.system.enabled and any(getattr(ev, "type", None) == "double_blink" for ev in events):
+                self.system.click(g)
+            if res.disabled_reason:
+                out.append(self.system.state())
         return out
 
     # -- gaze prediction ---------------------------------------------------------
@@ -687,6 +704,15 @@ class TrackerSession:
     def _cmd_settings(self, cmd: dict) -> list[dict]:
         self._apply_settings(cmd)
         return [{"type": "settings", **self.settings, "effective": self.effective()}]
+
+    def _cmd_system_control(self, cmd: dict) -> list[dict]:
+        """Turn whole-computer desktop control on/off. ``_cmd_`` prefix is the
+        command dispatcher's convention (see handle_command)."""
+        if cmd.get("status"):
+            return [self.system.state()]
+        if cmd.get("enabled"):
+            return [self.system.enable()]
+        return [self.system.disable("Desktop control turned off.")]
 
     def _apply_settings(self, s: dict) -> None:
         if s.get("smoothing") in (*SMOOTHING_LEVELS, "auto"):
