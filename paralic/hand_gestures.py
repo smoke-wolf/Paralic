@@ -95,11 +95,14 @@ class PointingMap:
 
 def estimate_pinch_thresholds(open_dists: np.ndarray, pinch_dists: np.ndarray,
                               default_on: float = 0.45, default_off: float = 0.60) -> tuple[float, float]:
-    """Personal make/break pinch thresholds (thumb-index distance / palm width).
+    """Personal make/break pinch thresholds (thumb-index distance in palm widths).
 
-    ``make`` (pinch_on) sits just above the closed-pinch distances; ``break``
-    (pinch_off) sits below the open distances, with a guaranteed gap for
-    hysteresis so a single pinch cannot chatter into several clicks.
+    ``make`` (pinch_on) sits a quarter of the way from this person's closed
+    pinch to their open hand, so every pinch reaches it; ``break`` (pinch_off)
+    halfway, so letting go only partly still releases - with a gap between
+    them so one pinch cannot chatter into several clicks. A wide-open thumb
+    does not push the thresholds out of reach: at most one palm width of the
+    gap counts.
     """
     open_dists = np.asarray(open_dists, float)
     pinch_dists = np.asarray(pinch_dists, float)
@@ -109,10 +112,9 @@ def estimate_pinch_thresholds(open_dists: np.ndarray, pinch_dists: np.ndarray,
     openp = float(np.percentile(open_dists, 20))        # cautious "open"
     if openp - closed < 0.08:                           # not separable → fall back
         return default_on, default_off
-    make = closed + 0.35 * (openp - closed)
-    brk = closed + 0.70 * (openp - closed)
-    make = float(np.clip(make, 0.12, 0.9))
-    brk = float(np.clip(max(brk, make + 0.08), make + 0.08, 1.1))
+    gap = min(openp - closed, 1.0)
+    make = float(np.clip(closed + 0.25 * gap, 0.12, 0.9))
+    brk = float(np.clip(max(closed + 0.5 * gap, make + 0.08), make + 0.08, 1.1))
     return make, brk
 
 
@@ -237,7 +239,8 @@ def stop_palm(pts: np.ndarray, ratio: float = 1.15) -> bool:
     width = palm_width(pts)
     spread = _dist(pts[INDEX_TIP], pts[PINKY_TIP]) / width
     thumb_out = _dist(pts[THUMB_TIP], pts[INDEX_MCP]) / width
-    return spread >= 1.25 and thumb_out >= 0.8
+    thumb_free = _dist(pts[THUMB_TIP], pts[INDEX_TIP]) / width       # not an "OK" sign
+    return spread >= 1.25 and thumb_out >= 0.8 and thumb_free >= 0.9
 
 
 class HandGestureRecognizer:
@@ -286,15 +289,20 @@ class HandGestureRecognizer:
         return on, max(off, on + 0.05)
 
     def _aim_point(self, t: float, pinch_off: float) -> tuple[Optional[float], Optional[tuple[float, float]]]:
-        """Where the cursor pointed when the fingers started to close: the last
-        frame (not too long ago) on which the pinch was still fully open."""
-        aim_t, aim = None, None
+        """Where the cursor pointed when the fingers started to close.
+
+        Going back in time from the pinch, the thumb-index distance grows while
+        the fingers were closing; the frame where it stops growing (and the
+        pinch was open) is where they started. Never further back than
+        ``aim_ms``.
+        """
+        aim_t, aim, later = None, None, None
         for rt, cur, d in reversed(self._recent):
             if t - rt > self.config.aim_ms / 1000.0:
                 break
-            aim_t, aim = rt, cur
-            if d >= pinch_off:
-                break
+            if later is not None and later >= pinch_off and d <= later + 0.03:
+                break               # not closing any more: the later frame is where it began
+            aim_t, aim, later = rt, cur, d
         return aim_t, aim
 
     def update(self, t: float, pts: Optional[np.ndarray], *, mirror: bool = True) -> tuple[HandState, list[HandEvent]]:
