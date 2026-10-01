@@ -1,7 +1,9 @@
-// Practice: pop targets with a double blink. Targets shrink every level.
+// Practice: pop targets with a double blink (a pinch in hand mode). Targets
+// shrink every level.
 
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
+import { say, sayHtml } from '../mode.js';
 import { sounds } from '../sound.js';
 import { PursuitTrainer } from '../pursuit.js';
 
@@ -50,14 +52,16 @@ export default {
       renderStats();
       center(
         h('h1', {}, 'Pop the targets'),
-        h('p', { class: 'muted', style: { maxWidth: '44ch', margin: '0 auto 28px' } },
-          `Look at each target and blink twice to pop it. ${TARGETS_PER_ROUND} targets per level; they get smaller as you improve.`),
+        h('p', { class: 'muted', style: { maxWidth: '44ch', margin: '0 auto 28px' }, html: sayHtml(
+          `Look at each target and blink twice to pop it. ${TARGETS_PER_ROUND} targets per level; they get smaller as you improve.`,
+          `Point at each target and pinch to pop it. ${TARGETS_PER_ROUND} targets per level; they get smaller as you improve.`) }),
         h('div', { class: 'btn-row' },
           button(`Start level ${level}`, 'play', start, true),
           button('Follow a trail', 'target', () => pursuit.run('lissajous')),
           button('Snake chase', 'play', () => pursuit.runSnake())),
-        h('p', { class: 'muted', style: { maxWidth: '48ch', margin: '18px auto 0', fontSize: '0.9em' } },
-          'Smooth-pursuit modes: follow a moving dot with your eyes. They sharpen your tracking and, once you are calibrated, quietly fine-tune the model from the moments you stay locked on.'));
+        h('p', { class: 'muted', style: { maxWidth: '48ch', margin: '18px auto 0', fontSize: '0.9em' }, html: sayHtml(
+          'Smooth-pursuit modes: follow a moving dot with your eyes. They sharpen your tracking and, once you are calibrated, quietly fine-tune the model from the moments you stay locked on.',
+          'Smooth-pursuit modes: follow a moving dot with your fingertip — good practice for smooth, steady pointing.') }));
     };
 
     const pursuit = new PursuitTrainer(app);
@@ -120,7 +124,7 @@ export default {
         h('div', { class: 'eyebrow' }, `Level ${level} complete`),
         h('h1', {}, accuracy >= 80 ? 'Great aim!' : 'Nice work!'),
         h('p', { class: 'muted', style: { fontSize: '1.2rem', marginBottom: '28px' } },
-          `${r.hits} targets in ${avg} s on average · ${accuracy}% of double blinks on target`),
+          `${r.hits} targets in ${avg} s on average · ${accuracy}% of ${say('double blinks', 'pinches')} on target`),
         h('div', { class: 'btn-row' },
           canLevelUp ? button('Next level', 'arrowRight', () => { level += 1; intro(); }, true) : null,
           button('Play again', 'refresh', start),

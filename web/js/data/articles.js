@@ -1,4 +1,7 @@
 // Articles for the "Read" section. Blocks: ['h2', text] | ['p', text] | ['quote', text] | ['list', [items]]
+// In hand mode (see web/js/mode.js) a block's optional third element replaces
+// its text, and an article's optional `hands` ({title, summary, minutes, body})
+// replaces those fields.
 
 export const ARTICLES = [
   {
@@ -26,6 +29,32 @@ export const ARTICLES = [
       ['p', 'In the browser, the cursor is drawn on top of the page and gently snaps to the nearest button, which lights up. When a double blink arrives, that button is clicked. Each click also nudges a small correction, so the cursor slowly lines up better with the things you pick.'],
       ['p', 'That’s all: a camera, a few neural networks, and a website designed with big, friendly targets.'],
     ],
+    hands: {
+      title: 'How Paralic follows your hand',
+      summary: 'From webcam pixels to a cursor: the hand tracking, pointing and pinches behind this website.',
+      minutes: 3,
+      body: [
+        ['p', 'In hand mode, Paralic turns an ordinary webcam into a pointer you control with one hand. There is no special hardware — just a camera, a neural network and some careful signal processing. Here is what happens with every camera frame while you use this site.'],
+        ['h2', '1. The camera frame'],
+        ['p', 'Your browser captures a picture from the webcam and sends it to a small Python program running on your own computer. Nothing is uploaded to the internet and no video is stored: each frame is analysed in memory and then thrown away.'],
+        ['h2', '2. Finding your hand'],
+        ['p', 'The picture goes through MediaPipe Hand Landmarker, neural networks made by Google. One finds your palm; another places 21 landmarks on your hand — the wrist, and four points along each finger up to its tip — and follows them from frame to frame.'],
+        ['h2', '3. Pointing'],
+        ['p', 'The tip of your index finger is the cursor. During the hand setup you point at dots whose positions are known, and Paralic fits a pointing map: a small formula that stretches the comfortable reach of your fingertip to the whole screen, so you never have to stretch for the corners.'],
+        ['p', 'To tell you how accurate the map is, Paralic checks each dot against a map fitted on the other dots only. That is the pointing accuracy shown in Settings and in the Lab.'],
+        ['h2', '4. Measuring in palm widths'],
+        ['p', 'Your hand looks bigger the closer it is to the camera. So every distance — between your thumb and index finger, or how far your hand moves — is measured in palm widths, the distance across your knuckles. A pinch looks the same whether your hand is near or far.'],
+        ['h2', '5. Pinching to click'],
+        ['p', 'A pinch starts when your thumb and index fingertips come closer than one threshold, and ends only when they move apart past a second, wider one. The gap between the two stops one pinch from chattering into several clicks, and the full hand setup measures both on your own hand.'],
+        ['quote', 'Closing your fingers tugs the fingertip a little, so the cursor holds still while you pinch, and the click goes to what you pointed at just before your fingers started to close.'],
+        ['p', 'A quick pinch-and-release is a click. Keep pinching and move your hand up or down, and the page scrolls instead.'],
+        ['h2', '6. The stop sign'],
+        ['p', 'An open hand — all five fingers out and spread — held still for a moment pauses Paralic, and the same sign resumes it. Pointing, with the other fingers curled, never looks like it, so you can’t pause by accident.'],
+        ['h2', '7. Smoothing and clicking'],
+        ['p', 'A One Euro filter takes the tremble out of the fingertip without making the cursor lag behind quick moves. In the browser the cursor gently snaps to the nearest button, which lights up, and a pinch clicks it.'],
+        ['p', 'That’s all: a camera, a hand-tracking network, and a website designed with big, friendly targets.'],
+      ],
+    },
   },
   {
     id: 'tips',
@@ -53,6 +82,29 @@ export const ARTICLES = [
       ['h2', 'Look after your eyes'],
       ['p', 'Controlling a computer with your eyes is surprisingly tiring at first. Use the Pause button whenever you want to look around freely, and follow the 20-20-20 rule: every 20 minutes, look at something about 20 feet (6 metres) away for 20 seconds.'],
     ],
+    hands: {
+      title: 'Tips for comfortable, accurate hand control',
+      summary: 'Lighting, posture and habits that make the cursor land where you point.',
+      minutes: 3,
+      body: [
+        ['p', 'Hand tracking works best when the camera gets a clear, steady view of one hand. A few small changes can make a big difference.'],
+        ['h2', 'Light your hand'],
+        ['p', 'Sit facing a window or a lamp so your hand is evenly lit. Avoid bright light directly behind you — the camera will expose for the background and your hand will fall into shadow.'],
+        ['h2', 'Position your hand'],
+        ['list', [
+          'Hold your hand about 40–60 cm from the camera, palm facing it.',
+          'Keep the whole hand in view, wrist included.',
+          'Use one hand at a time — Paralic follows a single hand.',
+          'Wipe the camera lens — smudges blur your fingers.',
+        ]],
+        ['h2', 'Set up the way you will sit'],
+        ['p', 'Do the hand setup with your hand where you plan to hold it. If you move or the cursor no longer lands where you point, run a Re-point (just the pointing dots) from Settings, Home or the Lab. If pinches are missed, redo the full hand setup: it measures your hand and tunes the pinch to it.'],
+        ['h2', 'Pinching to click'],
+        ['p', 'Touch the tips of your thumb and index finger together, then let go — a quick, clear pinch. The cursor holds still while your fingers close, and the click goes to what you pointed at just before. A long pinch, or one that moves your hand a lot, does not click: it may scroll instead.'],
+        ['h2', 'Rest your arm'],
+        ['p', 'Holding a hand up is tiring. Rest your elbow on the desk or an armrest — small movements of the fingertip are enough, because the hand setup stretches them to the whole screen. To take a break, hold up an open hand with your fingers spread to pause; do it again to resume.'],
+      ],
+    },
   },
   {
     id: 'history',
@@ -95,7 +147,8 @@ export const ARTICLES = [
         'Reflex blinks protect the eye — when something flies towards your face, or a light is suddenly very bright.',
         'Voluntary blinks are the ones you make on purpose.',
       ]],
-      ['p', 'Paralic listens for a special voluntary blink: two in quick succession. Spontaneous blinks rarely come in such tight pairs, which makes a double blink a clear signal that you want to click.'],
+      ['p', 'Paralic listens for a special voluntary blink: two in quick succession. Spontaneous blinks rarely come in such tight pairs, which makes a double blink a clear signal that you want to click.',
+        'With eye control, Paralic listens for a special voluntary blink: two in quick succession. Spontaneous blinks rarely come in such tight pairs, which makes a double blink a clear signal that you want to click. In hand mode a pinch clicks instead, so you can blink as much as you like.'],
       ['h2', 'Why you don’t see the darkness'],
       ['p', 'Each blink cuts off your vision for a moment, yet the world never seems to go dark. Your brain briefly suppresses visual processing during a blink and stitches the view together, so the interruption goes unnoticed.'],
       ['h2', 'Blinking and screens'],

@@ -809,6 +809,17 @@ a.card:hover, button.card:hover { background: var(--card-hover); }
 }
 .opt.selected { border-color: var(--accent); background: rgba(94, 234, 212, 0.14); color: var(--accent); }
 .settings-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--gap); margin-bottom: var(--gap); }
+/* Settings -> Control with: two giant choices; the one in use (body.hand-mode, see js/mode.js) is lit. */
+.mode-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--gap); margin-bottom: 12px; }
+.mode-choices .choice { min-height: clamp(150px, 22vh, 230px); padding: 22px; }
+.mode-choice .mode-current { display: none; color: var(--accent); font-weight: 750; }
+body:not(.hand-mode) .mode-choice[data-mode="eyes"], body.hand-mode .mode-choice[data-mode="hand"] {
+  background: linear-gradient(160deg, rgba(94, 234, 212, 0.28), rgba(45, 212, 191, 0.12));
+  border-color: var(--accent);
+}
+body:not(.hand-mode) .mode-choice[data-mode="eyes"] .mode-current,
+body.hand-mode .mode-choice[data-mode="hand"] .mode-current { display: block; }
+.mode-note { margin: 0 0 var(--gap); }
 
 /* ------------------------------------------------------------------ */
 /* Help                                                                */
@@ -819,6 +830,7 @@ a.card:hover, button.card:hover { background: var(--card-hover); }
 .help-grid .card h3 svg { width: 30px; height: 30px; color: var(--accent); }
 .help-grid ul, .help-grid ol { margin: 0; padding-left: 1.3em; color: var(--muted); }
 .help-grid li { margin: 0.35em 0; }
+.help-grid .wide { grid-column: 1 / -1; }
 kbd { display: inline-block; min-width: 1.8em; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg-2); font-family: inherit; font-size: 0.85em; text-align: center; }
 
 .noscript { padding: 40px; font-size: 20px; }

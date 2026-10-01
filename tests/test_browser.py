@@ -401,7 +401,7 @@ def test_names_are_shown_as_text_not_html(page):
     page.evaluate("location.hash = '#/settings'")
     page.wait_for_timeout(500)
     assert page.evaluate("window.__x") is None
-    assert "<img src=x" in page.locator(".section-title").first.text_content()
+    assert "<img src=x" in page.locator('.section-title:has-text("Cursor movement")').text_content()
     page.evaluate("window.paralic.tracker.request({type: 'user_rename', name: 'Person 1'}, 'users')")
     page.wait_for_timeout(200)
 
@@ -425,6 +425,130 @@ def test_lab_shows_personalisation_and_runs_an_experiment(page):
     assert len(set(arms)) == 3                     # every variant was used, blind
     assert page.locator(".lab-table tbody tr").count() == 3
     assert page.evaluate("window.paralic.gaze.magnetOverride") is None
+
+
+# -- eyes or hands (body.hand-mode picks the wording and controls, see web/js/mode.js) ---------
+
+# Settings that only the eye tracking uses.
+EYE_ONLY_SETTINGS = [
+    '[data-setting="smoothing"]', '[data-setting="doubleBlink"]', '[data-setting="blinkSensitivity"]',
+    '[data-setting="learning"]', '[data-gesture="motion"]', '[data-gesture="head_nudge"]',
+    '[data-gesture="left_hold"]', '[data-gesture="right_hold"]', '[data-gesture="quick"]',
+    '[data-gesture="long_close"]', '[data-gesture="hold_ms"]', '[data-gesture="tracking_eye"]',
+]
+
+
+def hand_mode(pg, on=True):
+    pg.evaluate(f"document.body.classList.toggle('hand-mode', {'true' if on else 'false'})")
+
+
+def test_help_follows_the_control_mode(page):
+    page.evaluate("location.hash = '#/help'")
+    page.wait_for_selector(".help-grid:visible")
+    head = page.locator(".page-head")
+    assert head.locator("h1").inner_text() == "Using Paralic with your eyes"
+    assert "Look, blink twice" in head.inner_text()
+    assert page.locator('.card:has-text("Blink twice quickly")').is_visible()
+    assert not page.get_by_text("Using your hands").is_visible()
+
+    hand_mode(page)
+    assert head.locator("h1").inner_text() == "Using Paralic with your hands"
+    assert "pinch to click" in head.inner_text()
+    assert page.get_by_text("Using your hands").is_visible()
+    for title in ("Pointing", "Clicking: pinch", "Scrolling: pinch and move", "Pausing: open hand"):
+        assert page.locator(f'.card h3:has-text("{title}")').is_visible(), title
+    assert "40–60 cm from the camera, palm facing the camera" in page.locator(".help-grid:visible").first.inner_text()
+    assert not page.locator('.card:has-text("Blink twice quickly")').is_visible()
+    shown = page.locator("#page").inner_text().lower()
+    assert "blink" not in shown and "wink" not in shown
+
+    hand_mode(page, False)                         # and back: the eye wording again
+    assert head.locator("h1").inner_text() == "Using Paralic with your eyes"
+    assert not page.get_by_text("Using your hands").is_visible()
+
+
+def test_settings_follow_the_control_mode(page):
+    page.evaluate("location.hash = '#/settings'")
+    page.wait_for_selector(".mode-choices")
+    assert "Look at an option and blink twice" in page.locator(".page-head").inner_text()
+    for sel in EYE_ONLY_SETTINGS:
+        assert page.locator(sel).is_visible(), sel
+    assert page.locator('.mode-choice[data-mode="eyes"] .mode-current').is_visible()     # "In use"
+    assert not page.locator('.mode-choice[data-mode="hand"] .mode-current').is_visible()
+    assert not page.locator('[data-setting="hand-setup"]').is_visible()
+    assert "Rest your eyes on a button" in page.locator('[data-gesture="dwell"]').inner_text()
+
+    hand_mode(page)
+    assert "Point at an option and pinch" in page.locator(".page-head").inner_text()
+    for sel in EYE_ONLY_SETTINGS:
+        assert not page.locator(sel).is_visible(), sel
+    assert page.locator('.mode-choice[data-mode="hand"] .mode-current').is_visible()
+    assert not page.locator('.section-title:has-text("Cursor movement")').is_visible()
+    # Dwell click works with a finger too, so it stays - in hand words.
+    assert "Keep pointing at a button" in page.locator('[data-gesture="dwell"]').inner_text()
+    for text in page.locator(".setting:visible").all_inner_texts():
+        assert not any(w in text.lower() for w in ("blink", "wink", "eye", "gaze", "look")), text
+
+    # The hand setup card follows app.state.hand and runs the setup; the choice switches the mode.
+    card = page.locator('[data-setting="hand-setup"]')
+    assert "Not set up yet" in card.inner_text()
+    page.evaluate("""() => {
+        const app = window.paralic;
+        app.handSetup = (kind) => { window.__setup = kind; };
+        app.setMode = (mode) => { window.__mode = mode; };
+        app.state.hand = {points: 13, pointing_error_px: 38.4, pinch_tuned: true, calibrated: true};
+        app.emit('hand', app.state.hand);
+    }""")
+    assert "Pointing accuracy ≈ 38 px · pinch tuned" in card.inner_text()
+    look_at(page, '[data-setting="hand-setup"] .btn:has-text("Re-point")')
+    double_blink(page)
+    assert page.evaluate("window.__setup") == "point"
+    look_at(page, '[data-setting="hand-setup"] .btn:has-text("Redo hand setup")')
+    double_blink(page)
+    assert page.evaluate("window.__setup") == "full"
+    look_at(page, '.mode-choice[data-mode="eyes"]')
+    double_blink(page)
+    assert page.evaluate("window.__mode") == "eyes"
+
+    hand_mode(page, False)
+    assert page.locator('[data-setting="doubleBlink"]').is_visible()
+    assert not card.is_visible()
+
+
+def test_home_lab_and_articles_in_hand_mode(page):
+    hand_mode(page)
+    page.evaluate("location.hash = '#/home'")
+    page.wait_for_selector(".hero")
+    assert page.locator(".hero h1").inner_text() == "Browse with your hands."
+    assert page.locator('.gesture:has-text("Pinch and move")').is_visible()
+    assert not page.locator('.tile[href="#/draw"]').is_visible()          # drawing needs a held wink
+    assert page.locator('.calib-card:has-text("Hand not set up yet")').is_visible()
+    page.evaluate("location.hash = '#/lab'")
+    page.wait_for_selector(".lab-card")
+    assert page.locator('.lab-card:has-text("Your hand setup")').is_visible()
+    assert page.locator(".lab-card:visible").count() == 1                # the eye cards are hidden
+    page.evaluate("location.hash = '#/read/how-it-works'")
+    page.wait_for_selector(".article:visible")
+    assert page.locator(".article:visible h1").inner_text() == "How Paralic follows your hand"
+    hand_mode(page, False)
+    assert page.locator(".article:visible h1").inner_text() == "How Paralic follows your eyes"
+
+
+def test_a_pinch_picks_a_planet_up_in_hand_mode(page):
+    page.evaluate("location.hash = '#/arrange'")
+    page.wait_for_selector(".arrange-tray .arrange-card")
+    look_at(page, '.arrange-tray .arrange-card[data-planet="earth"]')
+    double_blink(page)                             # with the eyes this picks nothing up
+    assert page.locator(".drag-ghost").count() == 0
+    # Hand mode has no winks: a pinch (a double blink for the page) picks it up...
+    hand_mode(page)
+    double_blink(page)
+    assert page.locator(".drag-ghost").count() == 1
+    look_at(page, '.arrange-slot[data-slot="2"]')
+    double_blink(page)                             # ...and the next pinch puts it down
+    assert page.locator('.arrange-slot[data-slot="2"] .arrange-card[data-planet="earth"]').count() == 1
+    assert page.locator(".drag-ghost").count() == 0
+    assert "1 of 8" in page.locator(".arrange-status").text_content()
 
 
 @pytest.mark.slow

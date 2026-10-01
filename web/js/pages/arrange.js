@@ -1,9 +1,11 @@
 // Arrange: put the planets in order from the Sun - a drag-and-drop game that
 // is played with the eyes alone (hold one eye closed to drag, or use
-// "Pick up to move" from the menu and blink twice to drop).
+// "Pick up to move" from the menu and blink twice to drop) or, in hand mode,
+// with pinches (one picks a planet up, the next puts it down: gestures.js).
 
-import { h } from '../dom.js';
+import { esc, h } from '../dom.js';
 import { icon } from '../icons.js';
+import { sayHtml } from '../mode.js';
 import { sounds } from '../sound.js';
 import { PLANETS } from '../data/planets.js';
 
@@ -37,15 +39,16 @@ export default {
     const tray = h('div', { class: 'arrange-tray', 'data-dropzone': '', 'data-zone': 'tray', 'data-label': 'Tray' });
     const shuffleBtn = h('button', { class: 'btn', type: 'button', html: `${icon('refresh')}<span>Shuffle</span>` });
     const hint = app.state.simulated
-      ? 'Mouse demo: point at a planet, hold Q (or E), move to a slot, release.'
-      : 'Look at a planet, close one eye and keep it closed, look at a slot, then open your eye.';
+      ? esc('Mouse demo: point at a planet, hold Q (or E), move to a slot, release.')
+      : sayHtml('Look at a planet, close one eye and keep it closed, look at a slot, then open your eye.',
+        'Pinch a planet to pick it up — it follows your finger — then pinch on its place to put it down.');
+    const noWink = '<span class="eyes-only">No wink? Close both eyes for a second, or hold your gaze still for the menu and choose “Pick up to move”.</span>';
     el.append(
       h('div', { class: 'page-head' },
         h('div', {},
           h('div', { class: 'eyebrow' }, 'Arrange'),
           h('h1', {}, 'Put the planets in order'),
-          h('p', { class: 'muted' }, `Drag each planet into its place, from the Sun outwards. ${hint} `,
-            'No wink? Close both eyes for a second, or hold your gaze still for the menu and choose “Pick up to move”.')),
+          h('p', { class: 'muted', html: `Drag each planet into its place, from the Sun outwards. ${hint} ${noWink}` })),
         h('div', { class: 'btn-row' }, shuffleBtn)),
       h('div', { class: 'arrange-sun', html: `<span>☀</span> Sun` }),
       slots, status, tray);

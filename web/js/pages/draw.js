@@ -1,9 +1,11 @@
 // Draw: a canvas you paint on by holding one eye closed and looking around.
 // It uses ordinary pointer events, which is how the eye gestures reach any
-// page: a held wink is a pressed pointer at the spot you look at.
+// page: a held wink is a pressed pointer at the spot you look at. Hand mode
+// has no held press (a pinch clicks, pinch-and-move scrolls), so it says so.
 
-import { h, toast } from '../dom.js';
+import { esc, h, toast } from '../dom.js';
 import { icon } from '../icons.js';
+import { sayHtml } from '../mode.js';
 
 const COLORS = [['#5eead4', 'Teal'], ['#a78bfa', 'Violet'], ['#fbbf24', 'Gold'], ['#fb7185', 'Pink'], ['#f8fafc', 'White']];
 const SIZES = [['6', 'Thin'], ['14', 'Medium'], ['28', 'Thick']];
@@ -19,14 +21,15 @@ export default {
     const widths = h('div', { class: 'options' });
     const clear = h('button', { class: 'btn', type: 'button', html: `${icon('trash')}<span>Clear</span>` });
     const hint = app.state.simulated
-      ? 'Mouse demo: hold Q (or E) and move the mouse to draw.'
-      : 'Close one eye and keep it closed: the brush follows your other eye until you open it.';
+      ? esc('Mouse demo: hold Q (or E) and move the mouse to draw.')
+      : sayHtml('Close one eye and keep it closed: the brush follows your other eye until you open it.',
+        'Drawing needs one eye held closed, so it works with eye control only — with a hand, a pinch clicks and pinch-and-move scrolls. To draw, choose Eyes in Settings → Control with.');
     el.append(
       h('div', { class: 'page-head' },
         h('div', {},
           h('div', { class: 'eyebrow' }, 'Draw'),
           h('h1', {}, 'Paint with your eyes'),
-          h('p', { class: 'muted' }, hint))),
+          h('p', { class: 'muted', html: hint }))),
       h('div', { class: 'draw-tools' }, swatches, widths, clear),
       canvas);
 

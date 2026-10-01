@@ -2,6 +2,7 @@
 // landmarks the server sends back) and the blink meter.
 
 import { $ } from './dom.js';
+import { say } from './mode.js';
 
 /**
  * Draw eye outlines and irises (normalised coordinates) on a canvas. An eye
@@ -148,7 +149,7 @@ export class CameraPanel {
       this.fill.classList.toggle('closed', !!m.closing);
       if (m.thr) this.thr.style.left = `${Math.min(100, m.thr[0] * 100)}%`;
     } else {
-      this.setStatus('warn', m.error ? 'Frame error' : 'No face');
+      this.setStatus('warn', m.error ? 'Frame error' : say('No face', 'No hand'));
       this.fill.style.width = '0%';
     }
     const draw = (canvas, video) => {

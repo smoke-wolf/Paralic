@@ -27,3 +27,13 @@ export function clickWord(cap = false) {
   const w = say('blink twice', 'pinch');
   return cap ? w[0].toUpperCase() + w.slice(1) : w;
 }
+
+/** One line about the saved hand setup (app.state.hand), e.g. "Pointing accuracy ≈ 38 px · pinch tuned". */
+export function handSummary(hand) {
+  if (!hand) return 'Not set up yet';
+  const parts = [];
+  if (typeof hand.pointing_error_px === 'number') parts.push(`pointing accuracy ≈ ${Math.round(hand.pointing_error_px)} px`);
+  parts.push(hand.pinch_tuned ? 'pinch tuned' : 'standard pinch');
+  const line = parts.join(' · ');
+  return line[0].toUpperCase() + line.slice(1);
+}
