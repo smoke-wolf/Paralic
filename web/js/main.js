@@ -443,9 +443,10 @@ class App {
 
   /** Show the camera, wait until a face is found, then load or create a calibration. */
   async faceCheck(ov) {
+    const hand = this.state.handMode;
     const preview = this.makePreview();
-    const status = h('p', { class: 'big-status' }, 'Looking for your face…');
-    const hint = h('p', { class: 'muted' }, 'Centre your face in the oval.');
+    const status = h('p', { class: 'big-status' }, hand ? 'Looking for your hand…' : 'Looking for your face…');
+    const hint = h('p', { class: 'muted' }, hand ? 'Raise one hand into view.' : 'Centre your face in the oval.');
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'face-check' },
         preview.el,
@@ -460,18 +461,23 @@ class App {
       const off = this.tracker.on('frame', (m) => {
         if (!m.face) {
           good = 0;
-          status.textContent = 'Looking for your face…';
-          hint.textContent = 'Centre your face in the oval and make sure it is well lit.';
+          status.textContent = hand ? 'Looking for your hand…' : 'Looking for your face…';
+          hint.textContent = hand ? 'Raise one hand into view, fingers spread.'
+            : 'Centre your face in the oval and make sure it is well lit.';
           preview.guide.classList.remove('ok');
           return;
         }
         preview.guide.classList.add('ok');
-        const [yaw, pitch] = m.head || [0, 0];
-        if (m.dist && m.dist < 30) hint.textContent = 'You are quite close — lean back a little.';
-        else if (m.dist && m.dist > 95) hint.textContent = 'You are far away — move a little closer.';
-        else if (Math.abs(yaw) > 22 || Math.abs(pitch) > 22) hint.textContent = 'Face the screen straight on.';
-        else hint.textContent = 'Great — hold still…';
-        status.textContent = 'Face found';
+        if (hand) {
+          hint.textContent = 'Great — hold still…';
+        } else {
+          const [yaw, pitch] = m.head || [0, 0];
+          if (m.dist && m.dist < 30) hint.textContent = 'You are quite close — lean back a little.';
+          else if (m.dist && m.dist > 95) hint.textContent = 'You are far away — move a little closer.';
+          else if (Math.abs(yaw) > 22 || Math.abs(pitch) > 22) hint.textContent = 'Face the screen straight on.';
+          else hint.textContent = 'Great — hold still…';
+        }
+        status.textContent = hand ? 'Hand found' : 'Face found';
         good += 1;
         if (good >= 20 && hello && performance.now() - shownAt > 1500) {
           off();
@@ -483,6 +489,16 @@ class App {
     preview.remove();
     card.remove();
     this.camera.setVisible(getSettings().showCamera);
+
+    // Hand mode drives the cursor directly from the fingertip — there is no gaze
+    // network to calibrate, so skip the profile/calibration flow and start.
+    if (this.state.handMode) {
+      this.state.calibrated = true;
+      this.gaze.setActive(true);
+      this.closeOverlay(ov);
+      this.welcome();
+      return;
+    }
 
     // Several people use this computer: ask who it is first.
     if ((this.state.people || []).length > 1) await this.pickPerson(ov);
