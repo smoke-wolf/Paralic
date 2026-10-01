@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="port (default: 8000, next free one if busy)")
     parser.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
+    parser.add_argument("--no-window", action="store_true",
+                        help="don't show the native launcher window (macOS)")
     parser.add_argument("--model", type=Path, default=PROJECT_ROOT / "models" / "face_landmarker.task",
                         help="path of the MediaPipe face landmarker model (downloaded if missing)")
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data",
@@ -107,7 +109,14 @@ def main(argv: list[str] | None = None) -> None:
           f"  Press Ctrl+C to stop.\n", flush=True)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning("Browsers only allow camera access on localhost or HTTPS pages.")
-    if not args.no_browser:
+    from . import launcher
+    show_window = launcher.available() and not args.no_window
+    if show_window:
+        # Native window pointing the user to the browser to finish setup; its
+        # Quit button stops Paralic. Runs on a daemon thread so the server serves.
+        threading.Thread(target=lambda: launcher.run_launcher(url, on_quit=lambda: os._exit(0)),
+                         daemon=True).start()
+    elif not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
         uvicorn.run(app, host=args.host, port=port, log_level="warning", ws_max_size=8 * 1024 * 1024)

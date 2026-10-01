@@ -632,6 +632,11 @@ class App {
       toast('Calibration needs the camera (demo mode uses the mouse)', 'warn');
       return null;
     }
+    // Calibrate in full screen for the largest, most accurate targets (the auto-
+    // start path skips the Start button that would have requested it).
+    if (!params.has('nofs') && !document.fullscreenElement) {
+      document.documentElement.requestFullscreen?.().catch(() => {});
+    }
     if ((mode === 'adjust' || mode === 'adjust-mouse') && !this.state.calibrated) mode = 'full';
     if (mode === 'blink' || mode === 'wink' || mode === 'head') {
       try {
