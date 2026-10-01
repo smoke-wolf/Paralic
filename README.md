@@ -259,6 +259,10 @@ PARALIC_FAKE_VIDEO=/tmp/face.y4m python -m pytest --runslow tests/test_browser.p
 
 The MediaPipe integration tests download a public-domain test portrait on first use and are skipped offline.
 
+`python tools/benchmark.py` runs the personalisation benchmark on simulated people (model search,
+fine-tuning under drift and with bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B
+decisions) and writes [docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people.
+
 ## License
 
 **Proprietary — All Rights Reserved.** Copyright (c) 2026 Maliq Barnard.

@@ -1040,3 +1040,4 @@ body.gaze-dragging [data-dropzone].drop-hover,
 .lab-table th, .lab-table td { padding: 10px 16px; border-bottom: 1px solid var(--line); text-align: left; }
 .lab-table th { color: var(--muted); font-weight: 600; }
 .opt.swatch::before { content: ""; display: inline-block; width: 18px; height: 18px; margin-right: 10px; border-radius: 50%; background: var(--swatch); vertical-align: -3px; }
+.target.decoy { background: radial-gradient(circle, #cbd5e1 0 10%, #475569 11% 100%); box-shadow: none; }

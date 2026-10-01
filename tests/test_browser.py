@@ -328,9 +328,9 @@ def test_lab_shows_personalisation_and_runs_an_experiment(page):
     double_blink(page)
     arms = []
     for _ in range(12):                            # 3 variants x 4 targets
-        page.wait_for_selector(".lab-arena .target", timeout=4000)
+        page.wait_for_selector(".lab-arena .target:not(.decoy)", timeout=4000)
         arms.append(page.evaluate("JSON.stringify(window.paralic.gaze.magnetOverride)"))
-        look_at(page, ".lab-arena .target")
+        look_at(page, ".lab-arena .target:not(.decoy)")
         double_blink(page)
     page.wait_for_selector(".lab-table", timeout=8000)
     assert len(set(arms)) == 3                     # every variant was used, blind

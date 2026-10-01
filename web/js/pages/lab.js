@@ -211,12 +211,33 @@ function runner(el, app, experiment) {
       class: 'target', type: 'button', 'aria-label': 'Target', 'data-learn': 'practice',
       style: { left: `${x - size / 2}px`, top: `${y - size / 2}px`, width: `${size}px`, height: `${size}px` },
     });
+    // Two decoys nearby: picking one is a miss (a too-strong magnet or a too
+    // short dwell time shows up here, not only in the time to hit).
+    const decoys = [];
+    for (let i = 0; i < 2; i++) {
+      for (let tries = 0; tries < 30; tries++) {
+        const a = Math.random() * 2 * Math.PI;
+        const r = size * (1.6 + Math.random() * 1.2);
+        const dx = x + r * Math.cos(a);
+        const dy = y + r * Math.sin(a);
+        const free = decoys.every((d) => Math.hypot(d.x - dx, d.y - dy) > size * 1.3);
+        if (dx > size / 2 && dx < w - size / 2 && dy > size / 2 && dy < hgt - size / 2 && free) {
+          decoys.push({ x: dx, y: dy });
+          break;
+        }
+      }
+    }
+    const decoyEls = decoys.map((d) => h('button', {
+      class: 'target decoy', type: 'button', 'aria-label': 'Decoy', 'data-no-learn': '',
+      style: { left: `${d.x - size / 2}px`, top: `${d.y - size / 2}px`, width: `${size}px`, height: `${size}px` },
+    }));
     const finish = (result) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       offActivate();
       target.remove();
+      decoyEls.forEach((d) => d.remove());
       resolve(result);
     };
     target.addEventListener('click', () => {
@@ -228,7 +249,7 @@ function runner(el, app, experiment) {
     });
     // Let the new setting settle before the clock starts.
     let timer = setTimeout(() => {
-      arena.append(target);
+      arena.append(...decoyEls, target);
       shownAt = performance.now();
       timer = setTimeout(() => finish({ arm: arm.id, time_ms: TRIAL_TIMEOUT_MS, misses, timeout: true }), TRIAL_TIMEOUT_MS);
     }, 700);
