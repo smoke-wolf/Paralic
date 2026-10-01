@@ -72,6 +72,18 @@ your eyes or with your hand.
   `python -m paralic --record` records every session. Recordings stay on this
   computer in `data/recordings/`; the format is in
   `docs/recording-format.md`.
+- The **Paralic Inspector** (`python -m paralic.inspector`) replays a
+  recording frame by frame:
+  - the camera with the face mesh, irises and head pose (or the hand
+    skeleton), and the faces it ignored;
+  - the screen map with gaze, cursor and calibration targets;
+  - linked charts of eye closure against the blink thresholds, gaze, head
+    pose, glare per lens and pinch distance;
+  - "under the hood": every hidden layer of every gaze network for the
+    current frame, the inputs that drive it most, and the blink and wink
+    state machines;
+  - each calibration dot by dot, every event, and the configuration over
+    time.
 
 ### The website
 - Explore the Solar System, read articles, and use *Talk*: 175 spoken phrases
