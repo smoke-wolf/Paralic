@@ -374,6 +374,7 @@ export class Calibrator {
     let count = 0;
     let settled = null;     // null until the server reports it (older servers don't)
     let missing = 0;
+    let glare = 0;          // frames in a row with a reflection on glasses hiding an eye
     const good = () => (fixation && settled !== null ? settled : count);
     const off = this.tracker.on('frame', (m) => {
       if (m.labeled) {
@@ -381,6 +382,7 @@ export class Calibrator {
         if (typeof m.settled === 'number') settled = m.settled;
       }
       missing = m.face ? 0 : missing + 1;
+      glare = m.face && m.glare ? glare + 1 : 0;
       if (onProgress) onProgress(good(), minFrames);
     });
     const s = clientToScreen(x, y);
@@ -391,7 +393,8 @@ export class Calibrator {
         await this.wait(40);
         const elapsed = performance.now() - t0;
         const lost = missing > 4;
-        this.warn(lost ? 'I can’t see your face — look at the screen and check the lighting' : null);
+        this.warn(lost ? 'I can’t see your face — look at the screen and check the lighting'
+          : glare > 8 ? 'A reflection on your glasses hides an eye — tilt the screen a little or move the lamp' : null);
         this.ui.cam?.classList.toggle('lost', lost);
         if ((elapsed >= minMs && good() >= minFrames) || elapsed >= limit) break;
       }

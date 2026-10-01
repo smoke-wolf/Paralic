@@ -48,8 +48,8 @@ export function attachGlassesUi(app) {
 
 /** Glasses went on or came off: use the matching calibration, or adjust. */
 function offerSwitch(app, m) {
-  if (!m || app.state.handMode || !app.state.calibrated || app.calibrator.running
-      || app.overlayRoot.children.length) return;
+  if (!m || m.in_use || app.state.handMode || !app.state.calibrated || app.calibrator.running
+      || app.overlayRoot.children.length) return;          // in_use: the calibration in use fits already
   document.querySelector('.glasses-banner')?.remove();
   const on = !!m.glasses;
   const button = (label, ic, primary) => h('button', { class: `btn${primary ? ' primary' : ''}`, type: 'button',
