@@ -151,6 +151,31 @@ control when another hand comes into view.
   somewhere else starts afresh. *Check head directions* learns which way is which for you and how far you
   comfortably tilt.
 
+## Glasses
+
+Paralic notices glasses, and reflections on their lenses, on every camera frame (`paralic/glasses.py`):
+
+* **Glasses or not.** The bridge of a frame makes a horizontal edge right across the nose, where bare skin has
+  hardly any; rims below the eyes add to it. The edges are measured against the skin's own edges nearby (forehead
+  and cheeks), so the light and the skin's texture don't matter, and the result is smoothed with hysteresis, so it
+  does not flicker.
+* **A calibration with glasses and one without.** Glasses change how the eyes look to the camera, so every
+  calibration records whether glasses were worn, and each person keeps one of each
+  (`data/users/<id>/profile-glasses.json` next to `profile.json`). The one that fits is loaded; when there is
+  only the other one it is used, and the page suggests a quick adjust — which is then kept as the calibration
+  with glasses (or without). Put your glasses on or take them off while using Paralic and, a few seconds later,
+  the page offers your other calibration or a quick adjust. Calibrations from before keep working as they did.
+* **Reflections.** A lamp or window reflected in a lens hides that eye from the face mesh. The small reflection on
+  the eye that everyone has does not count; a larger bright, colourless patch over or next to the eye does. While
+  it covers one eye the cursor follows the other eye's network (aligned like during a wink, so it does not jump;
+  a wink still comes first). Calibration dots leave out frames where a reflection came and went; if it stays, the
+  frames are kept — so calibrating stays possible — and the page warns you. The *get comfortable* step shows the
+  same hint: tilt the screen a little or move the lamp.
+
+On glasses painted onto test faces (many brightnesses, tilts and sizes) every dark full-rim, half-rim and rimless
+frame was seen, and no face without glasses or with frown lines was taken for one; thin metal frames close to the
+skin's colour go unnoticed ([docs/glasses.md](docs/glasses.md)).
+
 ## Personalisation
 
 * **People** — each person has their own profile (`data/users/<id>/`): gaze networks, calibration data, blink
@@ -339,6 +364,7 @@ paralic/            Python package (server + eye and hand tracking)
   gazenet.py        GazeNet neural networks (NumPy MLP, Adam, cross-validation, ensemble, one-eye networks)
   calibration.py    calibration data, training, saved profile
   faceprint.py      face print: face deltas, texture, the learned matrix weighting, recognising
+  glasses.py        glasses and reflections on their lenses, seen on the camera frame
   personalize.py    blink test, auto smoothing/magnet, champion/challenger fine-tuning, A/B statistics
   users.py          people and their files
   model_assets.py   model download
@@ -373,7 +399,9 @@ The MediaPipe integration tests download a public-domain test portrait on first 
 slow and glancing eyes, quick adjust after sitting differently, model search, fine-tuning under drift and with
 bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B decisions) and writes
 [docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people. `python tools/faceprint_eval.py`
-checks the face print on public test faces and writes [docs/faceprint.md](docs/faceprint.md).
+checks the face print on public test faces and writes [docs/faceprint.md](docs/faceprint.md);
+`python tools/glasses_eval.py` checks glasses and glare detection on painted glasses and writes
+[docs/glasses.md](docs/glasses.md).
 
 ## License
 

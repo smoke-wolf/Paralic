@@ -680,7 +680,11 @@ def _is_legacy(doc: dict) -> bool:
 
 
 class ProfileStore:
-    """Stores the trained network (and its training data) as a JSON file."""
+    """Stores the trained network (and its training data) as a JSON file.
+
+    ``glasses`` records whether the calibration was made wearing glasses
+    (profiles from before Paralic noticed glasses have none: None).
+    """
 
     def __init__(self, path: Path):
         self.path = Path(path)
@@ -703,9 +707,11 @@ class ProfileStore:
             "accuracy_px": doc.get("accuracy_px"),
             "model_version": doc.get("model", {}).get("meta", {}).get("version"),
             "legacy": _is_legacy(doc) or bool(doc.get("model", {}).get("meta", {}).get("legacy")),
+            "glasses": doc.get("glasses"),
         }
 
-    def save(self, model: GazeNet, data: CalibrationData, screen: Optional[dict], accuracy_px: Optional[float]) -> None:
+    def save(self, model: GazeNet, data: CalibrationData, screen: Optional[dict], accuracy_px: Optional[float],
+             glasses: Optional[bool] = None) -> None:
         frames = data.of_kind(*TRAIN_KINDS)
         model.meta["feature_version"] = FEATURE_VERSION
         doc = {
@@ -725,6 +731,8 @@ class ProfileStore:
                 "weights": [round(f.weight, 3) for f in frames],
             },
         }
+        if glasses is not None:
+            doc["glasses"] = bool(glasses)
         self._write(doc)
 
     def save_correction(self, model: GazeNet) -> None:
@@ -785,7 +793,8 @@ class ProfileStore:
             data.add(LabeledFrame(t=t, features=np.asarray(feats, float), target=tuple(target), kind=kind,
                                   point=point, weight=float(w)))
         return model, data, {"created": doc.get("created"), "screen": doc.get("screen"),
-                             "accuracy_px": doc.get("accuracy_px"), "legacy": bool(model.meta.get("legacy"))}
+                             "accuracy_px": doc.get("accuracy_px"), "legacy": bool(model.meta.get("legacy")),
+                             "glasses": doc.get("glasses")}
 
     def _load_legacy(self, doc: dict) -> tuple[GazeNet, CalibrationData, dict]:
         """A version-1 profile: its networks read the first 20 columns, which
@@ -799,7 +808,7 @@ class ProfileStore:
                 member.inputs = list(range(len(LEGACY_FEATURE_NAMES)))
         model.meta["legacy"] = True
         return model, CalibrationData(), {"created": doc.get("created"), "screen": doc.get("screen"),
-                                          "accuracy_px": doc.get("accuracy_px"), "legacy": True}
+                                          "accuracy_px": doc.get("accuracy_px"), "legacy": True, "glasses": None}
 
     def delete(self) -> None:
         try:

@@ -10,9 +10,11 @@ Every browser tab that connects to the WebSocket gets its own
    wink detector (one eye closed: short winks, and held winks that work like
    holding a mouse button down),
 5. predicts the on-screen gaze point with GazeNet - with a one-eye network
-   while the other eye is closed,
+   while the other eye is closed, or hidden by a reflection on glasses
+   (``glasses.py`` notices glasses and such glare),
 6. smooths it and freezes it through blinks,
-7. stores the frame as a calibration sample if the browser labelled it.
+7. stores the frame as a calibration sample if the browser labelled it
+   (into the calibration made with glasses or the one made without).
 
 A session belongs to one *person* (see ``users.py``) and applies their
 personal settings: blink thresholds, cursor smoothing and button magnet
@@ -60,6 +62,7 @@ from .faceprint import MARGIN, MIN_SAMPLES, FaceRecognizer, FaceSample, choose_s
 from .features import extract_features, face_lighting, mesh_overlay, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
+from .glasses import GlassesDetector
 from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, blink_signal, other_eye, wink_config
 from .hand_control import GESTURE_HELP as HAND_GESTURES, HandControl, HandSetupError
 from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, PersonalizationError, analyze_blinks,
@@ -82,6 +85,9 @@ MAX_BLINK_RECORDING = 30 * 40    # frames
 MAX_WINK_RECORDING = 30 * 60
 BLINK_MUTE_AFTER_WINK_S = 0.3    # ignore blinks while a reopening eye settles
 WINK_OFFSET_FRAMES = 6           # frames before a wink that align the one-eye network
+GLARE_LEAD_S = 0.15              # glare may show this long before it is noticed (smoothing)
+GLARE_RELEASE_S = 0.6            # glare gone this long before the usual network leads again
+CALIBRATION_IDLE_S = 60.0        # a calibration without labelled frames for this long was left
 
 # Per-person gesture choices (stored in personal["gestures"]). The detection
 # settings are used here; the page reads the rest to decide what each gesture does.
@@ -220,6 +226,7 @@ class _FrameRecord:
     raw: Optional[np.ndarray] = None
     wall: float = 0.0
     winking: Optional[str] = None     # eye that was closed in a (possible) wink
+    glare: Optional[str] = None       # eye(s) behind a reflection on glasses
 
     @property
     def steady(self) -> bool:
@@ -248,6 +255,19 @@ class TrackerSession:
         self._wink_offset = np.zeros(2)
         self._blink_mute_until = 0.0
         self._wink_recording: Optional[list[tuple]] = None
+        # Glasses and reflections on them (see glasses.py). While glare hides
+        # one eye the other eye's network leads (like during a wink); each
+        # calibration records whether glasses were worn while its dots were
+        # recorded (labelled frames without / with), and is saved for that.
+        self.glasses = GlassesDetector()
+        self._glare_eye: Optional[str] = None
+        self._glare_offset = np.zeros(2)
+        self._glare_model: Optional[GazeNet] = None
+        self._glare_clear_at: Optional[float] = None
+        self._glasses_known: Optional[bool] = None     # the state the page last heard of
+        self._calib_glasses = [0, 0]
+        self._calibrating = False
+        self._label_seen = float("-inf")
         # How long the eyes have rested on the calibration dot being recorded.
         self._settle = SettleTracker()
         # An accuracy-improving round in progress: the model before it, the
@@ -305,7 +325,11 @@ class TrackerSession:
 
     @property
     def profiles(self) -> ProfileStore:
-        return self.users.profile_store(self.user["id"])
+        """Where the calibration in use is saved: the one made with glasses, or the other."""
+        return self._store(self.profile_meta.get("glasses") is True)
+
+    def _store(self, glasses: bool) -> ProfileStore:
+        return self.users.profile_store(self.user["id"], glasses=glasses)
 
     def close(self) -> None:
         with self._lock:
@@ -496,12 +520,14 @@ class TrackerSession:
             events += self.wink.update_missing(t)
             if self.wink.winking is None:
                 self._wink_eye = None
+            self.glasses.missing(t)
             gaze, frozen = self.stabilizer.update(t, None, False)
-            msg.update(face=False, gaze=_xy(gaze), raw=None, frozen=frozen, labeled=False)
+            msg.update(face=False, gaze=_xy(gaze), raw=None, frozen=frozen, labeled=False, **self.glasses.view())
             closing = False
         else:
             self._face_seen = t
             feats = extract_features(obs.points_px, obs.image_size, obs.blendshapes, obs.matrix)
+            self.glasses.update(t, rgb, obs.points_px, feats.yaw_deg, feats.pitch_deg)
             features = feats.vector
             cl, cr = feats.closure_left, feats.closure_right
             was_winking = self.wink.winking
@@ -536,6 +562,7 @@ class TrackerSession:
                 # During a wink the cursor follows the open eye; it holds still
                 # only if that eye closes as well.
                 closing = min(cl, cr) >= state.open_threshold
+            self._follow_glare(t)
             raw = self._predict(feats.vector)
             gaze, frozen = self.stabilizer.update(t, raw, closing, hold=state.deep and winking is None)
             if self._blink_recording is not None and len(self._blink_recording) < MAX_BLINK_RECORDING:
@@ -547,7 +574,8 @@ class TrackerSession:
 
             labeled = False
             label = header.get("label")
-            if (isinstance(label, dict) and not closing and winking is None
+            glare_skip = isinstance(label, dict) and self._glare_skips(t)
+            if (isinstance(label, dict) and not closing and winking is None and not glare_skip
                     and label.get("kind") in ("cal", "head", "val", "adjust")):
                 try:
                     target = (float(label["x"]), float(label["y"]))
@@ -558,6 +586,9 @@ class TrackerSession:
                     self.data.add(LabeledFrame(t=self.wall(), features=feats.vector.copy(), target=target,
                                                kind=label["kind"], point=point))
                     labeled = True
+                    self._label_seen = t
+                    if self.glasses.glasses is not None:
+                        self._calib_glasses[self.glasses.glasses] += 1
                     if label["kind"] in FIXATION_KINDS:
                         msg["settled"] = self._settle.update((label["kind"], point, target), feats.vector)
 
@@ -574,12 +605,15 @@ class TrackerSession:
                 closing=closing,
                 wink=self.wink.pressed,
                 winking=winking,
-                net=(self._wink_eye or self._preferred_eye()) if raw is not None else None,
+                net=(self._wink_eye or self._glare_eye or self._preferred_eye()) if raw is not None else None,
                 thr=[round(state.close_threshold, 3), round(state.open_threshold, 3)],
                 head=[round(feats.yaw_deg, 1), round(feats.pitch_deg, 1), round(feats.roll_deg, 1)],
                 dist=round(feats.distance_cm, 1),
                 pos=[round(float(features[17]), 1), round(float(features[18]), 1)],
+                **self.glasses.view(),
             )
+            if glare_skip:
+                msg["glare"] = self._glare_now()       # left out because of it: the page can say why
             if header.get("setup"):
                 msg["light"] = face_lighting(rgb, feats.face_box)
             if header.get("overlay"):
@@ -599,7 +633,8 @@ class TrackerSession:
 
         self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze,
                                           features=None if features is None else features.copy(),
-                                          raw=raw, wall=self.wall(), winking=winking))
+                                          raw=raw, wall=self.wall(), winking=winking,
+                                          glare=None if obs is None else self._glare_now()))
         w = self._face_window
         if w is not None and t >= w["until"]:
             face_events.append(self._finish_face_window())
@@ -610,6 +645,9 @@ class TrackerSession:
         out = [msg]
         out.extend(self._event_message(ev, frame_id, gaze) for ev in events)
         out.extend(face_events)
+        changed = self._glasses_changed(t)
+        if changed:
+            out.append(changed)
 
         # System-wide desktop control: move the real OS cursor to the gaze point,
         # click on a double blink, scroll at the screen edges. Off unless the user
@@ -729,7 +767,19 @@ class TrackerSession:
             if self._wink_eye not in self.model.eyes:
                 return None  # no one-eye network yet: hold the cursor still
             return self.model.predict(vector, self._wink_eye)[0] + self._wink_offset
+        if self._glare_eye is not None:
+            return self.model.predict(vector, self._glare_eye)[0] + self._glare_offset
         return self.model.predict(vector, self._preferred_eye())[0]
+
+    def _one_eye_offset(self, eye: str, before: float, glare_free: bool = False) -> np.ndarray:
+        """What to add to ``eye``'s one-eye network to match the usual one on
+        the last steady frames before time ``before`` (without glare if asked)."""
+        frames = [r.features for r in self._history if r.t < before and r.steady and r.features is not None
+                  and not (glare_free and r.glare)][-WINK_OFFSET_FRAMES:]
+        if not frames:
+            return np.zeros(2)
+        F = np.array(frames)
+        return (self.model.predict(F, self._preferred_eye()) - self.model.predict(F, eye)).mean(axis=0)
 
     def _start_wink_tracking(self, t: float, winking: str) -> None:
         """One eye started closing: let the open eye's network take over seamlessly.
@@ -741,14 +791,71 @@ class TrackerSession:
         self._wink_eye = other_eye(winking)
         self._wink_offset = np.zeros(2)
         if self.model is not None and self._wink_eye in self.model.eyes:
-            before = [r.features for r in self._history
-                      if r.t < self.wink.since and r.steady and r.features is not None][-WINK_OFFSET_FRAMES:]
-            if before:
-                F = np.array(before)
-                usual = self.model.predict(F, self._preferred_eye())
-                one_eye = self.model.predict(F, self._wink_eye)
-                self._wink_offset = (usual - one_eye).mean(axis=0)
+            self._wink_offset = self._one_eye_offset(self._wink_eye, self.wink.since)
         self.stabilizer.rewind(t, self.wink.since - self.stabilizer.rewind_s)
+
+    # -- glasses ---------------------------------------------------------------------
+    def _follow_glare(self, t: float) -> None:
+        """A reflection on glasses hides one eye: let the other eye's network lead.
+
+        As for a wink, it is aligned with the usual network on the last frames
+        before the glare (and smoothing restarts from there when the glare has
+        just begun). The usual network takes over again only once the glare has
+        been gone for GLARE_RELEASE_S, so the cursor does not flap between
+        them. A wink takes priority (see _predict).
+        """
+        if self._glare_model is not self.model:
+            self._glare_eye = None                 # another network: align afresh
+        glare = self.glasses.glare
+        eye = other_eye(glare) if glare in ("left", "right") else None
+        if eye is not None and (self.model is None or eye not in self.model.eyes or eye == self._preferred_eye()):
+            eye = None                             # no network to switch to, or it leads anyway
+        if eye is None:
+            if self._glare_eye is not None:
+                self._glare_clear_at = t if self._glare_clear_at is None else self._glare_clear_at
+                if t - self._glare_clear_at >= GLARE_RELEASE_S:
+                    self._glare_eye = self._glare_clear_at = None
+            return
+        self._glare_clear_at = None
+        if eye != self._glare_eye:
+            since = self.glasses.glare_since if self.glasses.glare_since is not None else t
+            self._glare_eye, self._glare_model = eye, self.model
+            self._glare_offset = self._one_eye_offset(eye, since - GLARE_LEAD_S, glare_free=True)
+            if t - since < 0.5:
+                self.stabilizer.rewind(t, since - GLARE_LEAD_S)
+
+    def _glare_now(self) -> Optional[str]:
+        """Eye(s) behind a reflection in this frame (smoothed, or this frame alone)."""
+        return self.glasses.glare or self.glasses.frame_glare
+
+    def _glare_skips(self, t: float) -> bool:
+        """Leave a labelled frame out: a reflection hides an eye just now. Glare
+        that persists is kept, so calibrating stays possible (the frames carry
+        ``glare`` and the page can warn)."""
+        return self._glare_now() is not None and not self.glasses.glare_persists(t)
+
+    def _calibration_running(self, t: float) -> bool:
+        """A calibration was started and is not finished (nor left long ago),
+        or its dots are being looked at (e.g. measuring a quick adjust)."""
+        return t - self._label_seen < (CALIBRATION_IDLE_S if self._calibrating else 3.0)
+
+    def _glasses_changed(self, t: float) -> Optional[dict]:
+        """Glasses put on or taken off (and kept so for a few seconds): tell the
+        page once, and whether there is a calibration for the new state. Only
+        while a calibration is in use and none is being made; otherwise the new
+        state is just noted (a calibration being loaded says so itself). The
+        first look counts as a change only if the calibration in use was made
+        the other way (it was loaded before the glasses could be seen)."""
+        now = self.glasses.settled
+        if now is None or now == self._glasses_known:
+            return None
+        before, self._glasses_known = self._glasses_known, now
+        if self.model is None or self._calibration_running(t):
+            return None
+        if before is None and self.profile_meta.get("glasses") in (None, now):
+            return None
+        return {"type": "glasses_changed", "glasses": now, "slot_available": self._store(now).exists(),
+                "in_use": self.profile_meta.get("glasses") == now}
 
     def _fps(self) -> float:
         if len(self._frame_times) < 2:
@@ -870,6 +977,10 @@ class TrackerSession:
         self._face_trust = self.user["id"]           # calibrating as themselves
         if mode in ("adjust", "refine") and self.model is None:
             return [{"type": "calibration_started", "ok": False, "error": "No calibration to improve"}]
+        self._calibrating = True
+        self._label_seen = self.clock()
+        if mode != "refine":
+            self._calib_glasses = [0, 0]
         if mode == "adjust":
             self.data.clear(["adjust"])
             self._refine = None
@@ -902,16 +1013,28 @@ class TrackerSession:
                 raise CalibrationError("No calibration to adjust")
             info = fit_adjustment(self.model, self.data)
             self.model.meta["trained_ts"] = self.wall()
+            # Adjusted for today's glasses state, it is saved for that state (a
+            # calibration made without glasses, adjusted with them, becomes the
+            # one with glasses; the original stays as it was).
+            self.profile_meta["glasses"] = self._calibration_glasses()
+            self._calibrating = False
             self._record_model("adjust", error_px=round(info["error_after_px"], 1))
             self.stabilizer.reset()
             self._save_profile()
             self._save_personal()
             return [{"type": "calibration_result", "ok": True, "mode": "adjust", **info,
-                     "personal": self.personal_view()}]
+                     "glasses": self.profile_meta["glasses"], "personal": self.personal_view()}]
         model, info = fit_full_calibration(self.data)
         self.model = model
+        self.profile_meta["glasses"] = self._calibration_glasses()
         self.stabilizer.reset()
-        return [{"type": "calibration_result", "ok": True, "mode": "full", **info}]
+        return [{"type": "calibration_result", "ok": True, "mode": "full", **info,
+                 "glasses": self.profile_meta["glasses"]}]
+
+    def _calibration_glasses(self) -> bool:
+        """Whether glasses were worn while this calibration's dots were recorded (most frames decide)."""
+        without, worn = self._calib_glasses
+        return worn > without
 
     def _cmd_validation_finish(self, cmd: dict) -> list[dict]:
         if self.model is None:
@@ -959,12 +1082,13 @@ class TrackerSession:
                                accuracy_px=round(result["mean_error_px"], 1),
                                cv_error_px=self.model.meta.get("cv_error_px"))
         self._apply_effective()
+        self._calibrating = False
         saved = False
         if cmd.get("save", True):
             saved = self._save_profile()
         self._save_personal()
         return [{"type": "validation_result", "ok": True, "saved": saved, **result,
-                 "personal": self.personal_view()}]
+                 "glasses": bool(self.profile_meta.get("glasses")), "personal": self.personal_view()}]
 
     # -- profile / people -----------------------------------------------------------------
     def _save_profile(self) -> bool:
@@ -972,7 +1096,8 @@ class TrackerSession:
             return False
         try:
             with self.users.lock_for(self.user["id"]):
-                self.profiles.save(self.model, self.data, self.screen, self.profile_meta.get("accuracy_px"))
+                self.profiles.save(self.model, self.data, self.screen, self.profile_meta.get("accuracy_px"),
+                                   glasses=self.profile_meta.get("glasses"))
             self._unsaved_events = 0
             return True
         except OSError:
@@ -984,17 +1109,31 @@ class TrackerSession:
             self._save_profile()
 
     def _cmd_profile_load(self, cmd: dict) -> list[dict]:
-        if not self.profiles.exists():
-            return [{"type": "profile", "loaded": False, "error": "No saved calibration",
+        # The calibration for the glasses state asked for - by default the one
+        # seen now - or, when there is none for it, the other one (the reply
+        # says so: a quick adjust helps). Not knowing yet: the one made without.
+        now = self.glasses.glasses
+        wanted = cmd["glasses"] if isinstance(cmd.get("glasses"), bool) else now
+        slots = {"glasses": self._store(True).exists(), "plain": self._store(False).exists()}
+        info = {"glasses_now": now, "slots": slots}
+        slot = next((g for g in ((True, False) if wanted else (False, True))
+                     if slots["glasses" if g else "plain"]), None)
+        if slot is None:
+            return [{"type": "profile", "loaded": False, "error": "No saved calibration", **info,
                      "personal": self.personal_view()}]
+        self._save_if_dirty()
         try:
-            model, data, meta = self.profiles.load()
+            model, data, meta = self._store(slot).load()
         except (OSError, ValueError, KeyError) as exc:
-            return [{"type": "profile", "loaded": False, "error": f"Could not load saved calibration: {exc}"}]
+            return [{"type": "profile", "loaded": False, "error": f"Could not load saved calibration: {exc}",
+                     **info}]
+        if slot:
+            meta["glasses"] = True
         self.model = model
         self.data = data
         self.profile_meta = meta
         self._refine = None
+        self._calibrating = False
         self.stabilizer.reset()
         if not model.eyes:
             # Saved before one-eye networks existed: add them now (a second or
@@ -1005,11 +1144,17 @@ class TrackerSession:
                 self._save_profile()
             except CalibrationError:
                 log.info("Not enough saved data for one-eye networks")
-        return [{"type": "profile", "loaded": True, **meta, "personal": self.personal_view()}]
+        # Made with glasses but none are worn now, or the other way round (an
+        # old profile does not say: it is used as before).
+        target = now if now is not None else wanted
+        mismatch = target is not None and meta["glasses"] is not None and meta["glasses"] != target
+        return [{"type": "profile", "loaded": True, **meta, **info, "glasses_mismatch": mismatch,
+                 "personal": self.personal_view()}]
 
     def _cmd_profile_delete(self, cmd: dict) -> list[dict]:
         try:
-            self.profiles.delete()
+            for glasses in (False, True):         # with glasses and without
+                self._store(glasses).delete()
         except OSError as exc:  # e.g. the file is locked on Windows
             return [{"type": "profile", "ok": False, "loaded": self.model is not None,
                      "error": f"Could not delete the saved calibration: {exc}"}]
@@ -1034,6 +1179,9 @@ class TrackerSession:
         self._blink_recording = None
         self._wink_recording = None
         self._wink_eye = None
+        self._glare_eye = None
+        self._calibrating = False
+        self._calib_glasses = [0, 0]
         self.stabilizer.reset()
         self.blink.reset()
         self.wink.reset()
@@ -1332,9 +1480,11 @@ class TrackerSession:
                 return False
             return float(np.hypot(*(r.raw - anchor.raw))) <= FIXATION_RADIUS_PX
 
+        # Frames where a reflection hid an eye for a moment are left out (as in calibrating).
+        glare_ok = self.glasses.glare_persists(self.clock())
         window = [r for r in list(self._history)[:idx + 1]
                   if r.features is not None and r.steady and anchor.t - r.t <= LABEL_WINDOW_S
-                  and same_fixation(r)]
+                  and same_fixation(r) and (glare_ok or r.glare is None)]
         if len(window) < 4:
             return skip("eyes were not steady")
         kind = cmd.get("kind")

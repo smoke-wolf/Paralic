@@ -5,6 +5,7 @@ Layout of the data directory::
     data/
       users.json                  who exists, and who used Paralic last
       users/<id>/profile.json     GazeNet + calibration and fine-tuning samples
+      users/<id>/profile-glasses.json  the same, calibrated wearing glasses
       users/<id>/personal.json    personal blink / smoothing / magnet settings,
                                   model history, experiment decisions
       users/<id>/experiments.json raw A/B trial results
@@ -114,8 +115,8 @@ class UserStore:
             doc = self._read_index()
         out = []
         for u in doc["users"]:
-            store = self.profile_store(u["id"])
-            out.append({**u, "calibrated": store.exists(), "face": self.face_store(u["id"]).exists(),
+            calibrated = self.profile_store(u["id"]).exists() or self.profile_store(u["id"], glasses=True).exists()
+            out.append({**u, "calibrated": calibrated, "face": self.face_store(u["id"]).exists(),
                         "hands": (self.user_dir(u["id"]) / "hand.json").is_file()})
         return out
 
@@ -207,8 +208,10 @@ class UserStore:
     def face_store(self, user_id: str) -> FacePrintStore:
         return FacePrintStore(self.user_dir(user_id) / "faceprint")
 
-    def profile_store(self, user_id: str) -> ProfileStore:
-        return ProfileStore(self.user_dir(user_id) / "profile.json")
+    def profile_store(self, user_id: str, glasses: bool = False) -> ProfileStore:
+        """The person's calibration made wearing glasses, or the other one (made
+        without them - or before Paralic noticed glasses)."""
+        return ProfileStore(self.user_dir(user_id) / ("profile-glasses.json" if glasses else "profile.json"))
 
     def load_personal(self, user_id: str) -> dict:
         return read_json(self.user_dir(user_id) / "personal.json", {})
