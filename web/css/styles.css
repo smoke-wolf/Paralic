@@ -1095,3 +1095,11 @@ body.gaze-dragging [data-dropzone].drop-hover,
   transition: stroke-dashoffset 0.15s linear;
 }
 .calib-ring.full .fill { stroke: #86efac; }
+
+/* Live gaze estimate shown during the continuous mouse-labelled tune-up, so the
+   user can see the tracker (ring) versus where they point the mouse (truth). */
+.calib-gaze-mark {
+  position: fixed; top: 0; left: 0; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 3px solid rgba(96, 165, 250, 0.95); border-radius: 50%;
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.6); pointer-events: none; z-index: 7;
+}

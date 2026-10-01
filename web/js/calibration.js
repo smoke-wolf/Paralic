@@ -10,8 +10,10 @@
 //   5. blink twice three times when the dot turns purple: learns how you
 //      blink (thresholds, timing, and which eye signal to watch).
 //
-// Quick adjust (about 8 seconds): 5 dots that correct a saved calibration for
-// today's seating position.
+// Quick tune-up (about 20 seconds): a dot glides along a smooth path while you
+// follow it with your eyes and keep the mouse pointer where you are looking; the
+// live mouse position labels every frame, and the dense data fits the affine
+// correction for today's seating position.
 //
 // Blink test / wink test: the blink step on its own, and "close your left
 // eye, now your right eye" to learn how (and whether) each eye winks.
@@ -623,24 +625,131 @@ export class Calibrator {
     return choice;
   }
 
-  // -- quick adjust ------------------------------------------------------------------------
+  // -- quick adjust: continuous, mouse-labelled pursuit ------------------------------------
+  //
+  // A dot glides slowly along a procedural path covering the whole screen while
+  // the user follows it with their eyes AND keeps the mouse pointer where they
+  // are looking. The MOUSE position is the ground-truth label (more honest than
+  // assuming perfect dot-following): every frame, if the pointer is near the dot
+  // and moving slowly (so the user is really tracking), we label the frame with
+  // the live mouse position. The dense (eye-features -> mouse-position) pairs fit
+  // the affine correction — quick and stable, and it cannot destabilise the net.
   async runAdjust() {
     this.cancelled = false;
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'adjust' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start adjustment');
-    this.say('Quick adjustment', 'Look at each dot as it appears.');
-    await this.wait(1600);
-    this.say('');
-    await this.showPoints(ADJUST_POINTS, 'adjust', { minFrames: 14 });
-    this.say('Adjusting…', h('div', { class: 'spinner' }));
+
+    this.say('Quick tune-up',
+      'Follow the dot with your eyes — and move the mouse so the pointer stays where you are looking.', { top: true });
+    await this.wait(4200);
+
+    let path = null;
+    try { path = await this.fetchTrail('lissajous'); } catch { /* fall back below */ }
+    if (!path || path.length < 2) {
+      // The trail API was unavailable: fall back to the old 5-dot adjust.
+      this.say('');
+      await this.showPoints(ADJUST_POINTS, 'adjust', { minFrames: 14 });
+      return this.finishAdjust();
+    }
+
+    // Show the live gaze estimate (so the user sees tracker vs. truth).
+    const gazeMark = h('div', { class: 'calib-gaze-mark', hidden: true });
+    this.ui.ov.append(gazeMark);
+    const offFrame = this.tracker.on('frame', (m) => {
+      const g = (m.face && m.gaze) ? screenToClient(m.gaze[0], m.gaze[1]) : null;
+      gazeMark.hidden = !g;
+      if (g) gazeMark.style.translate = `${g.x}px ${g.y}px`;
+    });
+
+    // Track the mouse (the ground-truth label) and its speed.
+    let mx = window.innerWidth / 2, my = window.innerHeight / 2, mt = performance.now();
+    let mvx = 0, mvy = 0;
+    const onMove = (e) => {
+      const now = performance.now();
+      const dt = Math.max(1e-3, (now - mt) / 1000);
+      mvx = (e.clientX - mx) / dt; mvy = (e.clientY - my) / dt;
+      mx = e.clientX; my = e.clientY; mt = now;
+    };
+    window.addEventListener('mousemove', onMove);
+
+    this.say('Follow the dot', 'Keep the mouse pointer where you are looking.', { top: true });
+    const DURATION = 20000;
+    const diag = Math.hypot(window.innerWidth, window.innerHeight);
+    const nearR = 0.17 * diag;        // pointer must be near the dot (really tracking)
+    const maxSpeed = 2.2 * diag;      // px/s: skip flung/!tracking frames
+    let collected = 0;
+    const start = performance.now();
+    try {
+      for (;;) {
+        this.checkCancel();
+        const now = performance.now();
+        const u = (now - start) / DURATION;
+        if (u >= 1) break;
+        const [fx, fy] = this.sampleTrail(path, u);
+        const dx = fx * window.innerWidth, dy = fy * window.innerHeight;
+        this.ui.dot.className = 'calib-dot collect';
+        this.ui.dot.style.translate = `${dx}px ${dy}px`;
+        this.setRing(u);
+        // Guards: pointer near the dot and moving slowly, else don't collect.
+        const nearDot = Math.hypot(mx - dx, my - dy) < nearR;
+        const slow = Math.hypot(mvx, mvy) < maxSpeed;
+        if (nearDot && slow) {
+          const s = clientToScreen(mx, my);
+          this.tracker.setLabel({ x: s.x, y: s.y, kind: 'adjust', pt: Math.floor((now - start) / 300) });
+          collected++;
+          this.warn(null);
+        } else {
+          this.tracker.setLabel(null);
+          this.warn(nearDot ? null : 'Keep the mouse pointer on the dot');
+        }
+        await this.raf();
+      }
+    } finally {
+      this.tracker.setLabel(null);
+      this.setRing(null);
+      window.removeEventListener('mousemove', onMove);
+      offFrame();
+      gazeMark.remove();
+    }
+
+    if (collected < 20) {
+      toast('I didn’t get enough tracking — try again and keep the pointer on the dot.', 'warn', 6000);
+      return { mode: 'adjust', fit: { ok: false, error: 'not enough data' } };
+    }
+    return this.finishAdjust();
+  }
+
+  async finishAdjust() {
+    this.say('Tuning…', h('div', { class: 'spinner' }));
     const res = await this.tracker.request({ type: 'calibration_fit', mode: 'adjust' }, 'calibration_result', 30000);
     this.app.gaze.resetBias();
     if (res.ok) {
-      toast(`Adjusted — error ${Math.round(res.error_before_px)} → ${Math.round(res.error_after_px)} px`, 'ok');
+      const show = (px) => `${Math.round(px)} px (≈${(px / 37.8).toFixed(1)} cm)`;
+      toast(`Tuned — error ${show(res.error_before_px)} → ${show(res.error_after_px)}`, 'ok', 6000);
       sounds.success();
     } else {
-      toast(res.error || 'Adjustment failed', 'warn');
+      toast(res.error || 'Tune-up failed', 'warn');
     }
     return { mode: 'adjust', fit: res };
   }
+
+  // Fetch a procedural pursuit path (normalised points) from the server.
+  async fetchTrail(kind) {
+    const res = await fetch(`/api/trail/${kind}?n=400&seed=${Date.now() % 997}`);
+    if (!res.ok) throw new Error('trail unavailable');
+    const data = await res.json();
+    return (data.points || []).map((p) => [p.x, p.y]);
+  }
+
+  // Position along the polyline at u in [0, 1] (linear between waypoints).
+  sampleTrail(points, u) {
+    const f = Math.max(0, Math.min(1, u)) * (points.length - 1);
+    const i = Math.floor(f);
+    const t = f - i;
+    const a = points[i];
+    const b = points[Math.min(points.length - 1, i + 1)];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+
+  raf() { return new Promise((r) => requestAnimationFrame(() => r())); }
 }
