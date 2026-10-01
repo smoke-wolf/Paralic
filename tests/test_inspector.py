@@ -642,3 +642,17 @@ def test_the_diagnosis_takes_each_accuracy_check_apart(client, demos, eyes):
     assert all(isinstance(f, str) and f for f in d["findings"])
     hand = client.get(f"/api/recordings/{demos['hand'].name}/diagnosis").json()
     assert hand["checks"] == [] and "No accuracy check" in hand["findings"][0]
+
+
+def test_an_export_holds_no_images_or_face_points(demos, eyes, tmp_path):
+    import zipfile
+
+    from paralic.diagnose import export
+
+    out = export(demos["eyes"], tmp_path / "share.zip")
+    with zipfile.ZipFile(out) as z:
+        names = z.namelist()
+        assert any(n.endswith("/frames.jsonl") for n in names) and any(n.endswith("/meta.json") for n in names)
+        assert not any("/video/" in n or "/landmarks/" in n for n in names)
+        frames = z.read(next(n for n in names if n.endswith("/frames.jsonl"))).decode()
+    assert '"eyes"' not in frames and '"mesh":{' not in frames and frames.count("\n") > 1000

@@ -406,6 +406,20 @@ adjust removes it), the scatter between dots (another calibration or an improvin
 floor the frame-to-frame jitter leaves (more light, sitting closer and a steady head help; more training does not),
 plus left-right against up-down and the edges against the middle. It sums up the session too — frame rate, glare,
 glasses, others in view, how much you moved, what learning from clicks did — and says what to try, in sentences.
+`python -m paralic.diagnose --export share.zip` also writes the recording **without camera images, face-mesh or
+hand points and eye outlines** — just the numbers (gaze, closures, thresholds, head pose, glasses, events,
+configuration, gaze models) — to share for analysis.
+
+**A real-world test, step by step**
+
+1. `./start.sh --record` (every session is recorded), Chrome or Edge, face lit from the front, about an arm's
+   length from the screen.
+2. Calibrate, browse for a few minutes, try *Talk* and *Trail Shooter*; do a quick adjust, and *Check my
+   accuracy* (Lab) at the end. With glasses: calibrate once with them and once without.
+3. Afterwards: `python -m paralic.diagnose` says what limited the accuracy; `python -m paralic.inspector`
+   shows everything frame by frame.
+4. To get help with the numbers, share `python -m paralic.diagnose --export share.zip` — never the recording
+   folder itself, which holds camera images.
 
 **Privacy:** a recording contains camera images of the face, and of anyone else in view. Recordings stay
 on this computer and Paralic never uploads them. When recording starts, the page says so ("camera images

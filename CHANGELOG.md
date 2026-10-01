@@ -9,6 +9,14 @@
   jitter leaves, which more training cannot lower. It also compares left-right
   with up-down and the edges with the middle, and sums up the session's
   conditions.
+- **Advice after calibration:** a fair or poor result now says what would help
+  most, measured on its own dots: a shared shift that a quick adjust removes,
+  the noise floor, the weak direction, or worse edges.
+- **Sharing a session safely:** `python -m paralic.diagnose --export share.zip`
+  writes a recording without camera images, face or hand points, or eye
+  outlines.
+- **● Rec by gaze:** the record button now works with the eyes or a hand, and
+  asks before it starts or stops.
 - **Security:** the app and the Inspector answer only requests made to this
   computer's own address, so no other website can point its domain here and
   read recordings or pages.

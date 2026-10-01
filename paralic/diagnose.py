@@ -285,6 +285,45 @@ def report(diag: dict, name: str = "") -> str:
     return "\n".join(lines) + "\n"
 
 
+# Frame fields that describe the face itself (outlines of the eyes, the face
+# mesh, the hand's points): left out of an export.
+PRIVATE_FIELDS = ("eyes", "mesh", "hand", "face_box")
+
+
+def export(path: Path, out: Path) -> Path:
+    """A zip of a recording without anything that shows the face: no camera
+    images, no face-mesh or hand points, no eye outlines - the numbers that
+    say how well tracking worked (gaze, closures, thresholds, head pose,
+    glasses and glare, events, the configuration and the gaze models)."""
+    import json
+    import zipfile
+
+    path, out = Path(path), Path(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        for name in ("meta.json", "events.jsonl"):
+            if (path / name).is_file():
+                z.write(path / name, f"{path.name}/{name}")
+        for model in sorted((path / "models").glob("*.json")):
+            z.write(model, f"{path.name}/models/{model.name}")
+        if (path / "frames.jsonl").is_file():
+            lines = []
+            with open(path / "frames.jsonl", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    try:
+                        doc = json.loads(line)
+                    except ValueError:
+                        continue                  # a line cut short by a crash
+                    msg = doc.get("msg")
+                    if isinstance(msg, dict):
+                        for key in PRIVATE_FIELDS:
+                            msg.pop(key, None)
+                    doc["video"] = False
+                    lines.append(json.dumps(doc, separators=(",", ":")))
+            z.writestr(f"{path.name}/frames.jsonl", "\n".join(lines) + "\n")
+    return out
+
+
 def main(argv=None) -> int:
     from .inspector.views import RecordingView
     from .recording import Recording, list_recordings, recordings_root
@@ -293,6 +332,8 @@ def main(argv=None) -> int:
                                  description="What limits the accuracy in a session recording.")
     ap.add_argument("recording", nargs="?", help="recording folder or id (default: the newest)")
     ap.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parent.parent / "data")
+    ap.add_argument("--export", type=Path, metavar="ZIP",
+                    help="also write a zip without images or face points, safe to share for analysis")
     args = ap.parse_args(argv)
     path = Path(args.recording) if args.recording else None
     if path is None or not path.is_dir():
@@ -307,6 +348,8 @@ def main(argv=None) -> int:
         path = Path(newest["path"]) if newest.get("path") else root / newest["id"]
     view = RecordingView(Recording(path))
     print(report(diagnose(view), path.name))
+    if args.export:
+        print(f"Saved without images or face points: {export(path, args.export)}")
     return 0
 
 
