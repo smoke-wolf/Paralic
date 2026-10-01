@@ -1,7 +1,8 @@
 """Synthetic eye images for integration tests with the real MediaPipe networks.
 
 Starting from a public-domain portrait (downloaded on first use), we paint the
-eyes closed or move the irises, to check that blink and gaze features react.
+eyes closed or move the irises, to check that blink and gaze features react,
+and paint glasses and reflections on their lenses.
 """
 
 from __future__ import annotations
@@ -109,3 +110,62 @@ def shift_iris(img: np.ndarray, pts: np.ndarray, dx_frac: float, dy_frac: float 
         base[disk > 0] = shifted[disk > 0]
         out = base
     return out
+
+
+def eye_axes(pts: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+    """The point between the eye centres, unit vectors along the eyes (towards
+    the person's left eye) and downwards, and the distance between the eyes."""
+    P = np.asarray(pts, float)[:, :2]
+    right = (P[L.RIGHT_EYE_OUTER] + P[L.RIGHT_EYE_INNER]) / 2
+    left = (P[L.LEFT_EYE_INNER] + P[L.LEFT_EYE_OUTER]) / 2
+    d = float(np.linalg.norm(left - right))
+    ex = (left - right) / d
+    return (left + right) / 2, ex, np.array([-ex[1], ex[0]]), d
+
+
+def paint_glasses(img: np.ndarray, pts: np.ndarray, style: str = "full", color: tuple = (28, 28, 32),
+                  thickness: float = 0.04, half_w: float = 0.40, half_h: float = 0.26) -> np.ndarray:
+    """Paint a pair of glasses: a rim around each eye (``style`` "full"; only the
+    upper half for "half"; none for "rimless"), a bridge over the nose and the
+    arms towards the ears. Sizes are in eye distances, ``color`` is BGR."""
+    import cv2
+
+    mid, ex, ey, d = eye_axes(pts)
+    out = img.copy()
+    width = max(1, int(round(thickness * d)))
+
+    def draw(xy, closed=False):
+        P = np.array([mid + d * (x * ex + y * ey) for x, y in xy])
+        cv2.polylines(out, [np.round(P * 4).astype(np.int32)], closed, color, width, cv2.LINE_AA, shift=2)
+
+    t = np.linspace(0, 2 * np.pi, 72, endpoint=False)
+    c, s = np.cos(t), np.sin(t)
+    for side in (-1, 1):                       # the person's right eye (image left), then the left
+        cx = side * 0.565                       # lenses sit a little outside the eyes
+        xs = cx + half_w * np.sign(c) * np.abs(c) ** (2 / 3)
+        ys = 0.03 + half_h * np.sign(s) * np.abs(s) ** (2 / 3)
+        if style == "full":
+            draw(zip(xs, ys), closed=True)
+        elif style == "half":
+            draw([(x, y) for x, y in zip(xs, ys) if y < 0.03])
+        edge = side * (0.565 + half_w)
+        draw([(edge, -0.10), (edge + side * 0.35, -0.08)])
+    inner = 0.565 - half_w
+    xs = np.linspace(-inner - 0.03, inner + 0.03, 12)
+    draw(zip(xs, -0.08 - 0.04 * (1 - (xs / inner) ** 2)))
+    return out
+
+
+def paint_glare(img: np.ndarray, pts: np.ndarray, eye: str = "right", size: float = 0.18,
+                at: tuple = (0.0, -0.05), level: float = 250.0) -> np.ndarray:
+    """Paint a soft, almost white reflection on one lens. ``eye``: the person's
+    eye; ``at``: the reflection's centre relative to that eye's centre (x
+    towards the person's left eye, y down) and ``size`` its radius, in eye
+    distances."""
+    mid, ex, ey, d = eye_axes(pts)
+    centre = mid + d * ((at[0] + (0.5 if eye == "left" else -0.5)) * ex + at[1] * ey)
+    yy, xx = np.mgrid[0:img.shape[0], 0:img.shape[1]].astype(np.float32)
+    u = ((xx - centre[0]) * ex[0] + (yy - centre[1]) * ex[1]) / (1.3 * size * d)
+    v = ((xx - centre[0]) * ey[0] + (yy - centre[1]) * ey[1]) / (size * d)
+    a = np.clip(1.6 * np.exp(-1.5 * (u * u + v * v) ** 2), 0.0, 1.0)[..., None]
+    return np.clip(img.astype(np.float32) * (1 - a) + level * a, 0, 255).astype(np.uint8)
