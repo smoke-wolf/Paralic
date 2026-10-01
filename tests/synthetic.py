@@ -29,17 +29,28 @@ class Head:
 
 
 class VirtualUser:
-    def __init__(self, seed: int = 0, noise: float = 1.0):
+    def __init__(self, seed: int = 0, noise: float = 1.0, eye_noise: tuple[float, float] = (1.0, 1.0),
+                 wander: tuple[float, float] = (0.0, 0.0)):
         self.rng = np.random.default_rng(seed)
         self.noise = noise
+        # Extra noise of the (right, left) eye's features.
+        self.eye_noise = eye_noise
+        # A squint that comes and goes: each fixation, the (right, left) eye
+        # points off by a random amount with this standard deviation.
+        self.wander = wander
+        self.seed = seed
         # Person-specific constants.
         self.k_x = 0.42 + 0.05 * self.rng.standard_normal()
         self.k_y = 0.30 + 0.04 * self.rng.standard_normal()
         self.open0 = 0.30 + 0.03 * self.rng.standard_normal()
         self.offset = 0.02 * self.rng.standard_normal(2)
 
-    def features(self, sx: float, sy: float, head: Head) -> np.ndarray:
-        """Feature vector for a gaze at screen pixel (sx, sy)."""
+    def features(self, sx: float, sy: float, head: Head, closed: str | None = None) -> np.ndarray:
+        """Feature vector for a gaze at screen pixel (sx, sy).
+
+        ``closed`` ("left" / "right") closes that eye, as in a wink: its iris
+        and lid features then say little about where the person looks.
+        """
         tx = (sx - SCREEN_W / 2) / PX_PER_CM
         ty = sy / PX_PER_CM
         theta = math.atan2(tx - head.x, head.dist)            # gaze yaw in world
@@ -47,25 +58,45 @@ class VirtualUser:
         ey = theta - head.yaw                                  # eye-in-head angles
         ep = phi + head.pitch
         n = self.noise
+        nr, nl = n * self.eye_noise[0], n * self.eye_noise[1]
         r = self.rng.standard_normal
-        dx = self.k_x * math.sin(ey) + self.offset[0]
-        dy = self.k_y * math.sin(ep) + 0.08 * math.sin(ep) ** 2 + self.offset[1]
-        aperture = self.open0 - 0.22 * max(0.0, math.sin(ep)) + 0.06 * max(0.0, -math.sin(ep))
-        look_in_l = max(0.0, min(1.0, -ey / 0.5))
-        look_out_l = max(0.0, min(1.0, ey / 0.5))
-        look_in_r = look_out_l
-        look_out_r = look_in_l
-        look_up = max(0.0, min(1.0, -ep / 0.4))
-        look_down = max(0.0, min(1.0, ep / 0.4))
+        # Per-eye rotation offsets (right yaw, right pitch, left yaw, left pitch), radians.
+        w = np.zeros(4)
+        if any(self.wander):
+            fixation = np.random.default_rng([self.seed, int(round(sx)), int(round(sy))])
+            w = fixation.standard_normal(4) * np.repeat(self.wander, 2)
+
+        def eye(yaw: float, pitch: float) -> tuple:
+            dx = self.k_x * math.sin(yaw) + self.offset[0]
+            dy = self.k_y * math.sin(pitch) + 0.08 * math.sin(pitch) ** 2 + self.offset[1]
+            aperture = self.open0 - 0.22 * max(0.0, math.sin(pitch)) + 0.06 * max(0.0, -math.sin(pitch))
+            neg = max(0.0, min(1.0, -yaw / 0.5))
+            pos = max(0.0, min(1.0, yaw / 0.5))
+            up = max(0.0, min(1.0, -pitch / 0.4))
+            down = max(0.0, min(1.0, pitch / 0.4))
+            return dx, dy, aperture, neg, pos, up, down
+
+        R = eye(ey + w[0], ep + w[1])
+        Lf = eye(ey + w[2], ep + w[3])
         v = np.array([
-            dx + 0.012 * n * r(), dy + 0.012 * n * r(),
-            dx + 0.012 * n * r(), dy + 0.012 * n * r(),
-            aperture + 0.01 * n * r(), aperture + 0.01 * n * r(),
-            look_in_l + 0.03 * n * r(), look_out_l + 0.03 * n * r(), look_up + 0.03 * n * r(), look_down + 0.03 * n * r(),
-            look_in_r + 0.03 * n * r(), look_out_r + 0.03 * n * r(), look_up + 0.03 * n * r(), look_down + 0.03 * n * r(),
+            R[0] + 0.012 * nr * r(), R[1] + 0.012 * nr * r(),
+            Lf[0] + 0.012 * nl * r(), Lf[1] + 0.012 * nl * r(),
+            R[2] + 0.01 * nr * r(), Lf[2] + 0.01 * nl * r(),
+            # left eye: look in / out / up / down
+            Lf[3] + 0.03 * nl * r(), Lf[4] + 0.03 * nl * r(), Lf[5] + 0.03 * nl * r(), Lf[6] + 0.03 * nl * r(),
+            # right eye: looking "in" for the right eye is the opposite direction
+            R[4] + 0.03 * nr * r(), R[3] + 0.03 * nr * r(), R[5] + 0.03 * nr * r(), R[6] + 0.03 * nr * r(),
             head.yaw + 0.01 * n * r(), head.pitch + 0.01 * n * r(), head.roll + 0.01 * n * r(),
             head.x + 0.2 * n * r(), -head.y + 0.2 * n * r(), -head.dist + 0.3 * n * r(),
         ])
+        if closed is not None:
+            # A shut eye: the "iris" sits low and central, the lid is closed,
+            # and the eye-movement blendshapes fade.
+            cols = {"right": (0, 1, 4, (10, 11, 12, 13)), "left": (2, 3, 5, (6, 7, 8, 9))}[closed]
+            v[cols[0]] = 0.3 * v[cols[0]] + 0.01 * r()
+            v[cols[1]] = 0.12 + 0.01 * r()
+            v[cols[2]] = 0.04 + 0.005 * r()
+            v[list(cols[3])] *= 0.2
         assert v.shape == (NUM_FEATURES,)
         return v
 

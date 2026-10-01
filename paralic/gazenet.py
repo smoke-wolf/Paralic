@@ -19,6 +19,11 @@ Training uses full-batch Adam with a Huber loss (robust to frames where you
 glanced away), L2 weight decay chosen by grouped cross-validation, and an
 ensemble of a few networks with different random initialisations.
 
+A GazeNet can also carry one-eye ("monocular") networks in ``eyes``: they
+read only one eye (plus the head pose), keep the cursor moving while the
+other eye is closed, and become the main model for people whose other eye
+does not track reliably.
+
 Everything is implemented with NumPy only: it trains in about a second on a
 laptop CPU and needs no deep-learning framework.
 """
@@ -308,29 +313,57 @@ class TrainReport:
     config: str = ""
 
 
+EYES = ("both", "left", "right")
+
+
 class GazeNet:
     HIDDEN = (32, 16)
     L2_GRID = (1e-3, 1e-2, 1e-1)
 
     def __init__(self, x_scaler: Scaler, y_scaler: Scaler, nets: list[MLPRegressor],
-                 correction: Optional[AffineCorrection] = None, meta: Optional[dict] = None):
+                 correction: Optional[AffineCorrection] = None, meta: Optional[dict] = None,
+                 inputs: Optional[Sequence[int]] = None, eyes: Optional[dict] = None):
         self.x_scaler = x_scaler
         self.y_scaler = y_scaler
         self.nets = nets
         self.correction = correction or AffineCorrection()
         self.meta = meta or {}
+        # Feature columns this network reads (None = all of them).
+        self.inputs = None if inputs is None else [int(i) for i in inputs]
+        # One-eye networks: "left" / "right" -> GazeNet.
+        self.eyes: dict[str, GazeNet] = dict(eyes or {})
 
     # -- inference ----------------------------------------------------------
-    def predict_uncorrected(self, X: np.ndarray) -> np.ndarray:
-        X = np.atleast_2d(X)
-        Z = self.x_scaler.transform(X)
+    @property
+    def eye(self) -> str:
+        """Which network ``predict`` uses by default: "both", "left" or "right"."""
+        eye = self.meta.get("eye", "both")
+        return eye if eye in self.eyes else "both"
+
+    def member(self, eye: Optional[str] = None) -> "GazeNet":
+        """The network for ``eye`` (default: the preferred one); falls back to both eyes."""
+        eye = self.eye if eye is None else eye
+        return self.eyes.get(eye, self) if eye != "both" else self
+
+    def members(self) -> list[tuple[str, "GazeNet"]]:
+        return [("both", self)] + [(k, self.eyes[k]) for k in EYES if k in self.eyes]
+
+    def _forward(self, X: np.ndarray) -> np.ndarray:
+        X = np.atleast_2d(np.asarray(X, float))
+        if self.inputs is not None:
+            X = X[:, self.inputs]
         # Clamp extreme inputs (e.g. a glitchy frame) to keep outputs sane.
-        Z = np.clip(Z, -6.0, 6.0)
+        Z = np.clip(self.x_scaler.transform(X), -6.0, 6.0)
         out = np.mean([net.forward(Z) for net in self.nets], axis=0)
         return self.y_scaler.inverse(out)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        return self.correction.apply(self.predict_uncorrected(X))
+    def predict_uncorrected(self, X: np.ndarray, eye: Optional[str] = None) -> np.ndarray:
+        return self.member(eye)._forward(X)
+
+    def predict(self, X: np.ndarray, eye: Optional[str] = None) -> np.ndarray:
+        """Gaze on screen for full feature vectors ``X`` (one-eye networks pick their columns)."""
+        m = self.member(eye)
+        return m.correction.apply(m._forward(X))
 
     def clone(self) -> "GazeNet":
         return GazeNet.from_dict(self.to_dict())
@@ -341,7 +374,8 @@ class GazeNet:
               holdout: Optional[np.ndarray] = None, min_std: Optional[np.ndarray] = None, ensemble: int = 3,
               iters: int = 600, l2_grid: Optional[Sequence[float]] = None,
               configs: Optional[Sequence[ModelConfig]] = None, folds: int = 3,
-              seed: int = 0) -> tuple["GazeNet", TrainReport]:
+              seed: int = 0, inputs: Optional[Sequence[int]] = None,
+              always_cv: bool = False) -> tuple["GazeNet", TrainReport]:
         """Train an ensemble, picking the architecture / weight decay by grouped cross-validation.
 
         ``groups`` identifies the calibration point each sample belongs to;
@@ -351,8 +385,16 @@ class GazeNet:
         samples, for example, should always stay in training).
         ``configs`` are the candidate models (an A/B/n test on this person's
         data); by default only the weight decay of the 32x16 network is tuned.
+        ``inputs`` restricts the network to some feature columns (the one-eye
+        networks); ``always_cv`` measures the cross-validated error even when
+        there is only one candidate (without the linear reference).
         """
         X = np.asarray(X, float)
+        if inputs is not None:
+            inputs = [int(i) for i in inputs]
+            X = X[:, inputs]
+            if min_std is not None:
+                min_std = np.asarray(min_std, float)[inputs]
         Y = np.asarray(Y, float)
         groups = np.asarray(groups)
         n = X.shape[0]
@@ -377,7 +419,7 @@ class GazeNet:
         candidates: dict[str, float] = {}
         cv_err = lin_err = float("nan")
         best = configs[len(configs) // 2] if len(configs) > 1 else configs[0]
-        if len(hold_groups) >= 6 and len(configs) > 1:
+        if len(hold_groups) >= 6 and (len(configs) > 1 or always_cv):
             fold_sets = grouped_folds(hold_groups, folds, seed)
             test_sets = [np.flatnonzero(np.isin(groups, hold_groups[f]) & can_hold) for f in fold_sets]
             all_idx = np.arange(n)
@@ -392,19 +434,20 @@ class GazeNet:
 
             for config in configs:
                 candidates[config.name] = cv(config)
-            if linear.name not in candidates:
+            if linear.name not in candidates and len(configs) > 1:
                 candidates[linear.name] = cv(linear)
             best = min(configs, key=lambda c: candidates[c.name])
             cv_err = candidates[best.name]
-            lin_err = candidates[linear.name]
+            lin_err = candidates.get(linear.name, float("nan"))
 
         xs = Scaler.fit(X, min_std)
         ys = Scaler.fit(Y)
         Xs, Ys = xs.transform(X), ys.transform(Y)
         members = 1 if best.hidden is None else ensemble
         nets = [best.fit(best.build(X.shape[1], seed + 101 * i), Xs, Ys, w, iters) for i in range(members)]
-        model = cls(xs, ys, nets, meta={"config": best.to_dict(), "l2": best.l2})
-        train_err = float(np.average(np.linalg.norm(model.predict(X) - Y, axis=1), weights=w))
+        model = cls(xs, ys, nets, meta={"config": best.to_dict(), "l2": best.l2}, inputs=inputs)
+        train_err = float(np.average(np.linalg.norm(
+            model.y_scaler.inverse(np.mean([net.forward(Xs) for net in nets], axis=0)) - Y, axis=1), weights=w))
         report = TrainReport(l2=best.l2, cv_error_px=cv_err, linear_cv_error_px=lin_err,
                              train_error_px=train_err, n_samples=n, n_groups=n_groups, candidates=candidates,
                              config=best.name)
@@ -422,27 +465,34 @@ class GazeNet:
         X = np.asarray(X, float)
         Y = np.asarray(Y, float)
         tuned = self.clone()
-        tuned.correction = AffineCorrection()
-        Xs = np.clip(tuned.x_scaler.transform(X), -6.0, 6.0)
-        Ys = tuned.y_scaler.transform(Y)
-        config = ModelConfig.from_dict(self.meta.get("config"))
-        for net in tuned.nets:
-            if config.hidden is None:
-                net.fit(Xs, Ys, weights, iters=0)
-            else:
-                net.continue_training(Xs, Ys, weights, l2=config.l2, iters=iters, lr=lr)
+        for _, m in tuned.members():
+            m.correction = AffineCorrection()
+            Xm = X if m.inputs is None else X[:, m.inputs]
+            Xs = np.clip(m.x_scaler.transform(Xm), -6.0, 6.0)
+            Ys = m.y_scaler.transform(Y)
+            config = ModelConfig.from_dict(m.meta.get("config"))
+            for net in m.nets:
+                if config.hidden is None:
+                    net.fit(Xs, Ys, weights, iters=0)
+                else:
+                    net.continue_training(Xs, Ys, weights, l2=config.l2, iters=iters, lr=lr)
         tuned.meta = {**self.meta}
         return tuned
 
     # -- serialisation ------------------------------------------------------
     def to_dict(self) -> dict:
-        return {
+        d = {
             "x_scaler": self.x_scaler.to_dict(),
             "y_scaler": self.y_scaler.to_dict(),
             "nets": [n.to_dict() for n in self.nets],
             "correction": self.correction.to_dict(),
             "meta": self.meta,
         }
+        if self.inputs is not None:
+            d["inputs"] = list(self.inputs)
+        if self.eyes:
+            d["eyes"] = {k: m.to_dict() for k, m in self.eyes.items()}
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "GazeNet":
@@ -452,4 +502,6 @@ class GazeNet:
             nets=[MLPRegressor.from_dict(n) for n in d["nets"]],
             correction=AffineCorrection.from_dict(d.get("correction")),
             meta=d.get("meta", {}),
+            inputs=d.get("inputs"),
+            eyes={k: cls.from_dict(v) for k, v in (d.get("eyes") or {}).items() if k in ("left", "right")},
         )

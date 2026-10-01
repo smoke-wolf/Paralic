@@ -97,20 +97,8 @@ def recommend_magnet(accuracy_px: float) -> dict:
 # Blinks
 # ---------------------------------------------------------------------------
 
-def analyze_blinks(samples: Sequence[tuple[float, float]], prompts: int = 3) -> dict:
-    """Learn someone's blinks from a prompted recording.
-
-    ``samples`` are (time in seconds, eye-closure score) for every frame of a
-    window in which the person was asked to blink twice ``prompts`` times.
-    A permissive threshold finds all blinks; their strength, length and the
-    pause inside double blinks then set this person's detector.
-    """
-    if len(samples) < 30:
-        raise PersonalizationError("Not enough camera frames - keep your face in view.")
-    t = np.array([s[0] for s in samples], float)
-    c = np.array([s[1] for s in samples], float)
-    order = np.argsort(t)
-    t, c = t[order], c[order]
+def _find_blinks(t: np.ndarray, c: np.ndarray) -> tuple[float, float, list[dict], list[float]]:
+    """Blinks in one closure signal: (baseline, noise, blinks, double-blink gaps)."""
     baseline = float(np.median(c))
     open_part = c[c <= np.percentile(c, 70)]
     noise = max(1.4826 * float(np.median(np.abs(open_part - np.median(open_part)))), 0.005)
@@ -129,7 +117,8 @@ def analyze_blinks(samples: Sequence[tuple[float, float]], prompts: int = 3) -> 
         if j < len(c) and i > 0:  # skip blinks cut off by the window edges
             dur_ms = (t[j] - t[i]) * 1000.0
             if 20.0 <= dur_ms <= 900.0:
-                blinks.append({"start": t[i], "end": t[j], "dur_ms": dur_ms, "peak": float(c[i:j].max())})
+                blinks.append({"start": t[i], "end": t[j], "i": i, "j": j, "dur_ms": dur_ms,
+                               "peak": float(c[i:j].max())})
         i = j
 
     gaps = []
@@ -141,17 +130,68 @@ def analyze_blinks(samples: Sequence[tuple[float, float]], prompts: int = 3) -> 
             k += 2
         else:
             k += 1
-    if len(blinks) < 3 or not gaps:
-        raise PersonalizationError("I couldn't see clear double blinks. Try again with two quick, full blinks.")
+    return baseline, noise, blinks, gaps
 
-    rise = float(np.median([b["peak"] for b in blinks])) - baseline
+
+def analyze_blinks(samples: Sequence[tuple], prompts: int = 3) -> dict:
+    """Learn someone's blinks from a prompted recording.
+
+    ``samples`` are (time in seconds, eye-closure score) - or (time, left eye,
+    right eye) - for every frame of a window in which the person was asked to
+    blink twice ``prompts`` times. A permissive threshold finds all blinks;
+    their strength, length and the pause inside double blinks then set this
+    person's detector.
+
+    With per-eye scores it also chooses which signal to watch: normally the
+    more open eye ("both" eyes must close, so a wink is never a blink), but
+    the average or a single eye when one eye hardly closes (e.g. facial
+    palsy), and it measures how lopsided ordinary blinks are, so that winks
+    can be told apart from them.
+    """
+    if len(samples) < 30:
+        raise PersonalizationError("Not enough camera frames - keep your face in view.")
+    arr = np.array([tuple(float(v) for v in s[:3]) if len(s) >= 3 else (float(s[0]), float(s[1]), float(s[1]))
+                    for s in samples], float)
+    arr = arr[np.argsort(arr[:, 0])]
+    t = arr[:, 0]
+    per_eye = all(len(s) >= 3 for s in samples)
+    if per_eye:
+        from .gestures import blink_signal
+
+        signals = {mode: np.array([blink_signal(l, r, mode) for l, r in arr[:, 1:3]])
+                   for mode in ("both", "mean", "left", "right")}
+    else:
+        signals = {"given": arr[:, 1]}
+
+    found = {}
+    for mode, c in signals.items():
+        baseline, noise, blinks, gaps = _find_blinks(t, c)
+        if len(blinks) >= 3 and gaps:
+            rise = float(np.median([b["peak"] for b in blinks])) - baseline
+            found[mode] = (baseline, noise, blinks, gaps, rise)
+    if not found:
+        raise PersonalizationError("I couldn't see clear double blinks. Try again with two quick, full blinks.")
+    if per_eye:
+        snr = {m: v[4] / v[1] for m, v in found.items()}
+        best = max(snr, key=snr.get)
+        # Prefer "both eyes" unless it is much weaker than the alternatives.
+        if "both" in found and found["both"][4] >= 0.1 and snr["both"] >= 0.5 * snr[best]:
+            mode = "both"
+        elif "mean" in found and found["mean"][4] >= 0.1 and snr["mean"] >= 0.6 * snr[best]:
+            mode = "mean"
+        else:
+            mode = best
+    else:
+        mode = "given"
+    baseline, noise, blinks, gaps, rise = found[mode]
+
     headroom = max(1.0 - baseline, 1e-3)
     # Trigger at about half of a typical blink, but safely above the noise.
     sensitivity = max(0.5 * rise / headroom, 3.5 * noise / headroom)
     sensitivity = float(np.clip(sensitivity, 0.12, 0.45))
     min_threshold = float(np.clip(baseline + 3.0 * noise + 0.03, 0.12, 0.30))
     durations = [b["dur_ms"] for b in blinks]
-    return {
+    result = {
         "sensitivity": round(sensitivity, 3),
         "min_threshold": round(min_threshold, 3),
         "double_gap_ms": round(float(np.clip(1.5 * max(gaps) + 120.0, 300.0, 1000.0))),
@@ -165,6 +205,17 @@ def analyze_blinks(samples: Sequence[tuple[float, float]], prompts: int = 3) -> 
         "n_pairs": len(gaps),
         "updated": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
+    if per_eye:
+        # How lopsided are this person's ordinary blinks? (Peak difference
+        # between the eyes' rises above their own baselines.)
+        bl, br = float(np.median(arr[:, 1])), float(np.median(arr[:, 2]))
+        asym = [float(np.max(np.abs((arr[b["i"]:b["j"], 1] - bl) - (arr[b["i"]:b["j"], 2] - br))))
+                for b in blinks]
+        result["signal"] = mode
+        result["blink_asym"] = round(float(np.percentile(asym, 90)), 3)
+        result["signals"] = {m: {"rise": round(v[4], 3), "snr": round(v[4] / v[1], 1), "n_blinks": len(v[2])}
+                             for m, v in found.items()}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +424,11 @@ def run_finetune(champion: GazeNet, data: CalibrationData, *, min_new_events: in
         else:
             new_model, _ = fit_full_calibration(full, kinds=TRAIN_KINDS,
                                                 configs=[ModelConfig.from_dict(retrained_config)])
+            # The refit has a single candidate, so it has no cross-validated
+            # error to choose the leading eye with: keep the search's choice.
+            for key in ("eye", "eye_cv_px", "cv_error_px"):
+                if key in candidates["retrained"].meta:
+                    new_model.meta[key] = candidates["retrained"].meta[key]
         new_model.meta.update({
             "trained_ts": time.time(),
             "trained_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

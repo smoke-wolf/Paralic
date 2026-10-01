@@ -31,8 +31,8 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from .features import EYE_FEATURE_IDX, FEATURE_MIN_STD, FEATURE_NAMES, NUM_FEATURES
-from .gazenet import AffineCorrection, GazeNet
+from .features import EYE_FEATURE_IDX, EYE_INPUTS, FEATURE_MIN_STD, FEATURE_NAMES, NUM_FEATURES
+from .gazenet import AffineCorrection, GazeNet, ModelConfig
 
 PROFILE_VERSION = 1
 KINDS = ("cal", "head", "val", "adjust", "ft")
@@ -159,17 +159,70 @@ def prepare_training_set(frames: list[LabeledFrame], chunk: int = 4, stride: int
 # Training / evaluation
 # ---------------------------------------------------------------------------
 
+# A one-eye network becomes the main one only if it is clearly better than
+# using both eyes (e.g. one eye squints, drifts or is covered).
+EYE_PREFERENCE_GAIN = 0.10
+EYE_PREFERENCE_MIN_PX = 10.0
+
+
+def _training_frames(data: CalibrationData, include_validation: bool,
+                     kinds: Optional[Iterable[str]]) -> list[LabeledFrame]:
+    if kinds is None:
+        kinds = ("cal", "head", "val") if include_validation else ("cal", "head")
+    return data.of_kind(*kinds)
+
+
+def train_eye_models(model: GazeNet, X: np.ndarray, Y: np.ndarray, G: np.ndarray, W: np.ndarray,
+                     H: np.ndarray, cv_both: Optional[float] = None) -> dict:
+    """Train the left- and right-eye networks and choose which network leads.
+
+    Each one-eye network uses the architecture chosen for the two-eye one.
+    Their cross-validated errors are compared with the two-eye network's:
+    for most people both eyes together are best, but when one eye does not
+    track reliably, the other eye alone gives a steadier, more accurate cursor.
+    """
+    config = ModelConfig.from_dict(model.meta.get("config"))
+    errors = {"both": cv_both}
+    model.eyes = {}
+    for eye, idx in EYE_INPUTS.items():
+        net, report = GazeNet.train(X, Y, G, W, holdout=H, min_std=FEATURE_MIN_STD, configs=[config],
+                                    inputs=idx, always_cv=True, ensemble=2)
+        net.meta["cv_error_px"] = _round(report.cv_error_px)
+        model.eyes[eye] = net
+        errors[eye] = report.cv_error_px
+    preferred = "both"
+    both = errors["both"]
+    if both is not None and both == both:  # not NaN
+        for eye in ("left", "right"):
+            e = errors[eye]
+            if e == e and e < both * (1.0 - EYE_PREFERENCE_GAIN) and both - e >= EYE_PREFERENCE_MIN_PX:
+                if preferred == "both" or e < errors[preferred]:
+                    preferred = eye
+    model.meta["eye"] = preferred
+    model.meta["eye_cv_px"] = {k: _round(v) if v is not None else None for k, v in errors.items()}
+    return {"eye": preferred, "eye_cv_px": model.meta["eye_cv_px"]}
+
+
+def fit_eye_models(model: GazeNet, data: CalibrationData, *, kinds: Iterable[str] = TRAIN_KINDS) -> dict:
+    """Add one-eye networks to an existing model (e.g. one saved before they existed)."""
+    frames = data.of_kind(*kinds)
+    X, Y, G, W, H = prepare_training_set(frames)
+    if len({g for g, h in zip(G, H) if h}) < 6:
+        raise CalibrationError("Not enough calibration data for the one-eye networks")
+    return train_eye_models(model, X, Y, G, W, H, cv_both=model.meta.get("cv_error_px"))
+
+
 def fit_full_calibration(data: CalibrationData, include_validation: bool = False, *,
-                         kinds: Optional[Iterable[str]] = None, configs=None) -> tuple[GazeNet, dict]:
+                         kinds: Optional[Iterable[str]] = None, configs=None,
+                         eyes: bool = True) -> tuple[GazeNet, dict]:
     """Train GazeNet on the labelled frames of the given kinds.
 
     ``configs`` is the list of candidate architectures (see
     :func:`paralic.gazenet.search_configs`); by default only the weight decay
-    is tuned, which keeps the first calibration fast.
+    is tuned, which keeps the first calibration fast. With ``eyes`` the
+    one-eye networks are trained too (see :func:`train_eye_models`).
     """
-    if kinds is None:
-        kinds = ("cal", "head", "val") if include_validation else ("cal", "head")
-    frames = data.of_kind(*kinds)
+    frames = _training_frames(data, include_validation, kinds)
     n_points = len({f.point for f in frames if f.kind == "cal"})
     if n_points < 6:
         raise CalibrationError(
@@ -181,6 +234,7 @@ def fit_full_calibration(data: CalibrationData, include_validation: bool = False
             "Too few calibration points had steady eye data. Try again, keeping your eyes on each dot.")
     started = time.perf_counter()
     model, report = GazeNet.train(X, Y, G, W, holdout=H, min_std=FEATURE_MIN_STD, configs=configs)
+    eye_info = train_eye_models(model, X, Y, G, W, H, cv_both=report.cv_error_px) if eyes else {}
     elapsed = time.perf_counter() - started
     model.meta.update({
         "trained_ts": time.time(),
@@ -201,11 +255,13 @@ def fit_full_calibration(data: CalibrationData, include_validation: bool = False
         "linear_cv_error_px": _round(report.linear_cv_error_px),
         "train_error_px": _round(report.train_error_px),
         "train_seconds": round(elapsed, 2),
+        **eye_info,
     }
     return model, info
 
 
-def point_summaries(model: GazeNet, frames: list[LabeledFrame], corrected: bool = True) -> list[dict]:
+def point_summaries(model: GazeNet, frames: list[LabeledFrame], corrected: bool = True,
+                    eye: Optional[str] = None) -> list[dict]:
     """Per-dot accuracy (distance of the mean prediction) and precision (spread)."""
     out = []
     for name, group in _group_frames(frames).items():
@@ -213,7 +269,7 @@ def point_summaries(model: GazeNet, frames: list[LabeledFrame], corrected: bool 
         F = F[reject_outliers(F)]
         if len(F) == 0:
             continue
-        P = model.predict(F) if corrected else model.predict_uncorrected(F)
+        P = model.predict(F, eye) if corrected else model.predict_uncorrected(F, eye)
         target = np.array(group[0].target, float)
         mean = P.mean(axis=0)
         out.append({
@@ -241,21 +297,30 @@ def evaluate_validation(model: GazeNet, data: CalibrationData) -> dict:
 
 
 def fit_adjustment(model: GazeNet, data: CalibrationData) -> dict:
-    """Quick re-adjustment: fit an affine correction from a few dots."""
-    points = point_summaries(model, data.of_kind("adjust"), corrected=False)
-    if len(points) < 3:
-        raise CalibrationError("Not enough adjustment data - keep your eyes on each dot.")
-    pred = np.array([p["mean"] for p in points])
-    target = np.array([p["target"] for p in points])
-    before = model.correction.apply(pred)
-    correction = AffineCorrection.fit(pred, target)
-    after = correction.apply(pred)
-    model.correction = correction
-    return {
-        "n_points": len(points),
-        "error_before_px": float(np.linalg.norm(before - target, axis=1).mean()),
-        "error_after_px": float(np.linalg.norm(after - target, axis=1).mean()),
-    }
+    """Quick re-adjustment: fit an affine correction from a few dots.
+
+    Every network (both eyes and each single eye) gets its own correction;
+    the reported numbers are for the one that normally leads.
+    """
+    frames = data.of_kind("adjust")
+    fitted: dict[str, tuple[AffineCorrection, dict]] = {}
+    for eye, member in model.members():
+        points = point_summaries(member, frames, corrected=False, eye="both")
+        if len(points) < 3:
+            raise CalibrationError("Not enough adjustment data - keep your eyes on each dot.")
+        pred = np.array([p["mean"] for p in points])
+        target = np.array([p["target"] for p in points])
+        before = member.correction.apply(pred)
+        correction = AffineCorrection.fit(pred, target)
+        after = correction.apply(pred)
+        fitted[eye] = (correction, {
+            "n_points": len(points),
+            "error_before_px": float(np.linalg.norm(before - target, axis=1).mean()),
+            "error_after_px": float(np.linalg.norm(after - target, axis=1).mean()),
+        })
+    for eye, member in model.members():
+        member.correction = fitted[eye][0]
+    return fitted[model.eye][1]
 
 
 def _round(v: float) -> Optional[float]:

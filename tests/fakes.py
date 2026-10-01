@@ -17,11 +17,14 @@ def tiny_jpeg() -> bytes:
     return buf.tobytes()
 
 
-def fake_features(vector: np.ndarray, closure: float = 0.12) -> FrameFeatures:
+def fake_features(vector: np.ndarray, closure: float = 0.12, closure_left: float | None = None,
+                  closure_right: float | None = None) -> FrameFeatures:
     eye = EyeMeasure(center=np.zeros(2), iris=np.zeros(2), iris_radius=1.0, width=30.0,
                      dx=float(vector[0]), dy=float(vector[1]), aperture=float(vector[4]))
-    return FrameFeatures(vector=np.asarray(vector, float), closure=closure, closure_left=closure,
-                         closure_right=closure, aperture=0.3, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
+    cl = closure if closure_left is None else closure_left
+    cr = closure if closure_right is None else closure_right
+    return FrameFeatures(vector=np.asarray(vector, float), closure=0.5 * (cl + cr), closure_left=cl,
+                         closure_right=cr, aperture=0.3, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0,
                          distance_cm=60.0, right_eye=eye, left_eye=eye, face_box=(0.3, 0.3, 0.7, 0.7))
 
 

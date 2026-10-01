@@ -132,16 +132,31 @@ class GazeStabilizer:
             best = self._last
         return None if best is None else best.copy()
 
-    def update(self, t: float, raw: Optional[np.ndarray], eyes_closing: bool) -> tuple[Optional[np.ndarray], bool]:
+    def rewind(self, t: float, before: float) -> None:
+        """Continue smoothing from where the cursor was at time ``before``.
+
+        Used when the gaze estimate switches to a one-eye network because one
+        eye started closing (a wink): the frames in between are unreliable.
+        """
+        pos = self.position_before(before)
+        self._frozen = False
+        self._release_at = None
+        if pos is not None:
+            self.filter.reset(pos, t - 1.0 / 30.0)
+            self._last = pos.copy()
+
+    def update(self, t: float, raw: Optional[np.ndarray], eyes_closing: bool,
+               hold: bool = False) -> tuple[Optional[np.ndarray], bool]:
+        """``hold`` keeps the cursor frozen past ``max_freeze_s`` (eyes deliberately shut)."""
         if not eyes_closing:
             self._freeze_expired = False
-        if eyes_closing and not self._freeze_expired:
+        if eyes_closing and (hold or not self._freeze_expired):
             if not self._frozen:
                 self._frozen = True
                 self._freeze_start = t
                 self._freeze_pos = self.position_before(t - self.rewind_s)
             self._release_at = None
-            if t - self._freeze_start <= self.max_freeze_s:
+            if hold or t - self._freeze_start <= self.max_freeze_s:
                 return self._copy(self._freeze_pos), True
             # Eyes have been "closing" for too long: it is not a blink (probably
             # looking down). Let the cursor move again.

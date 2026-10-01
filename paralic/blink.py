@@ -11,6 +11,12 @@ A *blink* is a closure that lasts between ``min_closed_ms`` and
 ``max_closed_ms``. A *double blink* is two blinks where the eyes were open for at
 most ``double_gap_ms`` in between. Longer closures (resting your eyes, looking
 far down) never count as blinks.
+
+A *long close* is a deliberate closure of both eyes for ``long_close_ms`` to
+``long_close_max_ms`` (an alternative to winking for people who cannot close
+one eye on its own). It has to be *deep* - close to a full blink - for most of
+that time, so that looking at the bottom of the screen (which lowers the lids
+too) does not count.
 """
 
 from __future__ import annotations
@@ -36,14 +42,18 @@ class BlinkConfig:
     initial_baseline: float = 0.2
     missing_reset_ms: float = 600.0
     min_threshold: float = 0.30      # lowest "closed" threshold (personalised for light blinkers)
+    long_close_ms: float = 1000.0
+    long_close_max_ms: float = 6000.0
+    deep_rise: Optional[float] = None  # rise above the baseline that counts as fully closed (personal)
 
 
 @dataclass
 class BlinkEvent:
-    type: str            # "blink" | "double_blink" | "blink_expired"
+    type: str            # "blink" | "double_blink" | "blink_expired" | "long_close_ready" | "long_close"
     t: float             # event time (seconds)
     count: int = 0       # blinks in the current sequence (for "blink")
-    first_start: Optional[float] = None   # when the first blink of the sequence started
+    first_start: Optional[float] = None   # when the first blink of the sequence (or the closure) started
+    duration_ms: float = 0.0
 
 
 @dataclass
@@ -54,6 +64,7 @@ class BlinkState:
     close_threshold: float
     open_threshold: float
     pending: int           # blinks waiting for a partner (0 or 1)
+    deep: bool = False     # closed as in a full blink (keeps the cursor frozen during a long close)
 
 
 @dataclass
@@ -72,6 +83,10 @@ class BlinkDetector:
         self._baseline = self.config.initial_baseline
         self._last_seen: Optional[float] = None
         self._closure = 0.0
+        self._closed_base = self._baseline   # baseline when the current closure started
+        self._closed_frames = 0
+        self._deep_frames = 0
+        self._ready_sent = False
 
     # -- thresholds ---------------------------------------------------------
     @property
@@ -90,6 +105,12 @@ class BlinkDetector:
         t_open = b + 0.5 * (t_close - b)
         return t_close, t_open
 
+    def deep_level(self, base: Optional[float] = None) -> float:
+        """Closure that counts as eyes fully shut (for long closes)."""
+        b = self._closed_base if base is None else base
+        rise = self.config.deep_rise if self.config.deep_rise else 0.6 * (1.0 - b)
+        return float(min(0.97, max(b + max(rise, 0.2), 0.5)))
+
     def state(self) -> BlinkState:
         t_close, t_open = self.thresholds()
         return BlinkState(
@@ -99,6 +120,7 @@ class BlinkDetector:
             close_threshold=t_close,
             open_threshold=t_open,
             pending=1 if self._pending else 0,
+            deep=self._closed and self._closure >= self.deep_level(),
         )
 
     def reset(self) -> None:
@@ -108,6 +130,11 @@ class BlinkDetector:
         self._baseline = self.config.initial_baseline
         self._last_seen = None
         self._closure = 0.0
+
+    def cancel(self) -> None:
+        """Forget the closure in progress and any blink waiting for a partner (no events)."""
+        self._closed = False
+        self._pending = None
 
     # -- updates ------------------------------------------------------------
     def update_missing(self, t: float) -> list[BlinkEvent]:
@@ -133,19 +160,35 @@ class BlinkDetector:
             if closure >= t_close:
                 self._closed = True
                 self._closed_since = t
+                self._closed_base = self._baseline
+                self._closed_frames = 0
+                self._deep_frames = 0
+                self._ready_sent = False
             elif self._pending is not None and (t - self._pending.end) * 1000.0 > cfg.double_gap_ms:
                 self._pending = None
                 events.append(BlinkEvent("blink_expired", t))
-        else:
+        if self._closed:
             duration_ms = (t - self._closed_since) * 1000.0
-            if duration_ms > cfg.max_closed_ms:
+            deep = closure >= self.deep_level()
+            self._closed_frames += 1
+            self._deep_frames += int(deep)
+            if duration_ms > cfg.max_closed_ms and not deep:
                 # Not a blink. Let long closures (e.g. looking far down) teach the
                 # baseline so the detector recovers instead of staying "closed".
+                # (Eyes that are really shut keep the old baseline.)
                 self._add_sample(t, closure)
             if closure < t_open:
                 self._closed = False
                 events.extend(self._on_reopen(t, duration_ms))
+            elif (not self._ready_sent and cfg.long_close_ms <= duration_ms <= cfg.long_close_max_ms
+                  and self._mostly_deep()):
+                self._ready_sent = True
+                events.append(BlinkEvent("long_close_ready", t, first_start=self._closed_since,
+                                         duration_ms=duration_ms))
         return events
+
+    def _mostly_deep(self) -> bool:
+        return self._closed_frames > 0 and self._deep_frames >= 0.8 * self._closed_frames
 
     # -- internals ----------------------------------------------------------
     def _on_reopen(self, t: float, duration_ms: float) -> list[BlinkEvent]:
@@ -153,7 +196,10 @@ class BlinkDetector:
         if not (cfg.min_closed_ms <= duration_ms <= cfg.max_closed_ms):
             expired = self._pending is not None
             self._pending = None
-            return [BlinkEvent("blink_expired", t)] if expired else []
+            events = [BlinkEvent("blink_expired", t)] if expired else []
+            if cfg.long_close_ms <= duration_ms <= cfg.long_close_max_ms and self._mostly_deep():
+                events.append(BlinkEvent("long_close", t, first_start=self._closed_since, duration_ms=duration_ms))
+            return events
 
         blink = _Blink(start=self._closed_since, end=t)
         if self._pending is not None:

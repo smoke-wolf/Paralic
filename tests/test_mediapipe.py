@@ -71,6 +71,19 @@ def test_closed_eyes_raise_closure(model_bytes, face):
     assert closed_f.closure > open_f.closure + 0.2
 
 
+def test_closing_one_eye_raises_only_that_eyes_closure(model_bytes, face):
+    # "left" is the person's left eye (on the right of the un-mirrored image):
+    # winks depend on getting this mapping right.
+    from paralic import landmarks as L
+
+    obs, open_f = features_of(model_bytes, face)
+    pts = obs.points_px[:, :2]
+    _, left = features_of(model_bytes, face_images.close_eyes(face, pts, (L.LEFT_EYE_CONTOUR,)))
+    _, right = features_of(model_bytes, face_images.close_eyes(face, pts, (L.RIGHT_EYE_CONTOUR,)))
+    assert (left.closure_left - open_f.closure_left) > (left.closure_right - open_f.closure_right) + 0.1
+    assert (right.closure_right - open_f.closure_right) > (right.closure_left - open_f.closure_left) + 0.1
+
+
 def test_iris_shift_moves_gaze_features(model_bytes, face):
     obs, centre = features_of(model_bytes, face)
     pts = obs.points_px[:, :2]

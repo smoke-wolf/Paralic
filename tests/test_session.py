@@ -19,11 +19,18 @@ def env(monkeypatch, tmp_path):
     user = VirtualUser(seed=5, noise=0.5)
     state = {"id": 0}
 
-    def frame(sx=None, sy=None, label=None, closure=0.12, face=True, overlay=False):
+    def frame(sx=None, sy=None, label=None, closure=0.12, face=True, overlay=False, closed=None, gesture=None):
+        """One camera frame; ``closed`` = "left" / "right" closes that eye (a wink)."""
         state["id"] += 1
         if face:
-            vec = user.features(sx if sx is not None else SCREEN_W / 2, sy if sy is not None else SCREEN_H / 2, Head())
-            tracker.push(fake_features(vec, closure))
+            vec = user.features(sx if sx is not None else SCREEN_W / 2, sy if sy is not None else SCREEN_H / 2,
+                                Head(), closed=closed)
+            if closed:
+                shut, other = 0.85, closure
+                cl, cr = (shut, other) if closed == "left" else (other, shut)
+                tracker.push(fake_features(vec, closure, cl, cr))
+            else:
+                tracker.push(fake_features(vec, closure))
         else:
             tracker.push(None)
         header = {"id": state["id"]}
@@ -31,6 +38,8 @@ def env(monkeypatch, tmp_path):
             header["label"] = label
         if overlay:
             header["overlay"] = True
+        if gesture:
+            header["gesture"] = gesture
         out = session.handle_frame(pack_frame(header, JPEG))
         clock.tick()
         return out
@@ -368,3 +377,113 @@ def test_finetune_starts_automatically(env, monkeypatch):
     session.wait_for_job()
     assert started.count(True) == 1  # once, then it waits (minimum gap between jobs)
     assert any(m["type"] == "finetune_result" and m["auto"] for m in pushed)
+
+
+# -- eye gestures --------------------------------------------------------------------------
+
+def test_held_wink_tracks_with_the_open_eye(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    for _ in range(45):
+        frame(500, 400)
+    msgs = []
+    # Keep the left eye closed while looking from (500, 400) over to (1400, 700).
+    for k in range(50):
+        f = min(1.0, k / 15)
+        msgs.extend(frame(500 + 900 * f, 400 + 300 * f, closed="left"))
+    for _ in range(10):
+        msgs.extend(frame(1400, 700))
+    events = [m for m in msgs if m["type"] != "frame"]
+    assert [m["type"] for m in events] == ["wink_start", "wink_end"], events
+    start, end = events
+    assert start["eye"] == "left" and np.hypot(start["at"][0] - 500, start["at"][1] - 400) < 90
+    assert end["duration_ms"] > 1400 and np.hypot(end["at"][0] - 1400, end["at"][1] - 700) < 140
+    frames = [m for m in msgs if m["type"] == "frame"]
+    during = frames[5:48]
+    assert all(m["winking"] == "left" and m["net"] == "right" and not m["frozen"] for m in during)
+    assert any(m["wink"] == "left" for m in during)
+    assert frames[-1]["net"] == "both" and frames[-1]["winking"] is None
+
+
+def test_wink_does_not_click_or_freeze(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    for _ in range(45):
+        frame(800, 500)
+    msgs = []
+    for _ in range(25):
+        msgs.extend(frame(800, 500, closed="right"))
+    for _ in range(10):
+        msgs.extend(frame(800, 500))
+    types = [m["type"] for m in msgs]
+    assert "blink" not in types and "double_blink" not in types
+    assert not any(m.get("frozen") for m in msgs if m["type"] == "frame")
+
+
+def test_long_close_reports_where_the_eyes_were(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    for _ in range(45):
+        frame(800, 300)
+    msgs = []
+    for _ in range(45):
+        msgs.extend(frame(800, 900, closure=0.92))  # eyes shut: the features drift
+    for _ in range(10):
+        msgs.extend(frame(800, 300))
+    events = [m for m in msgs if m["type"] != "frame"]
+    assert [m["type"] for m in events] == ["long_close_ready", "long_close"]
+    lc = events[-1]
+    assert lc["duration_ms"] >= 1400 and np.hypot(lc["at"][0] - 800, lc["at"][1] - 300) < 90
+    # The cursor stayed frozen for the whole closure (not just the first 0.9 s).
+    closed = [m for m in msgs if m["type"] == "frame"][2:44]
+    assert all(m["frozen"] for m in closed)
+
+
+def test_gesture_settings_are_validated_and_applied(env):
+    session, *_ = env
+    reply = session.handle_command({"type": "gestures_set", "gestures": {
+        "left_hold": "off", "dwell": True, "dwell_ms": 99999, "long_close": "menu", "hold_ms": "x",
+        "bogus": 1, "right_quick": "explode"}})[0]
+    assert reply["type"] == "personal" and reply["ok"]
+    g = reply["personal"]["gestures"]
+    assert g["left_hold"] == "off" and g["dwell"] is True and g["dwell_ms"] == 3000 and g["long_close"] == "menu"
+    assert g["hold_ms"] == 350 and g["right_quick"] == "off" and "bogus" not in g
+    assert reply["personal"]["winks"] == {"left": False, "right": True}
+    assert session.users.load_personal(session.user["id"])["gestures"]["left_hold"] == "off"
+    bad = session.handle_command({"type": "gestures_set"})[0]
+    assert bad["type"] == "personal" and bad["ok"] is False
+
+
+def test_wink_calibration_personalises_winks(env):
+    session, _, _, frame, _ = env
+    session.handle_command({"type": "wink_calibration_start"})
+    for phase, closed, n in (("rest", None, 40), ("left", "left", 60), ("rest", None, 30), ("right", "right", 60),
+                             ("rest", None, 30)):
+        for _ in range(n):
+            frame(closed=closed, gesture=phase)
+    res = session.handle_command({"type": "wink_calibration_finish"})[0]
+    assert res["type"] == "wink_calibration_result" and res["ok"], res
+    assert res["left"]["ok"] and res["right"]["ok"]
+    assert session.wink.config.left.rise == pytest.approx(res["left"]["threshold_rise"])
+    assert res["personal"]["wink_profile"]["left"]["ok"]
+    # Nothing recorded -> a clear error, and the earlier result is kept.
+    session.handle_command({"type": "wink_calibration_start"})
+    bad = session.handle_command({"type": "wink_calibration_finish"})[0]
+    assert bad["ok"] is False and session.personal["wink"]["left"]["ok"]
+
+
+def test_old_profiles_get_one_eye_networks_on_load(env, tmp_path):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    session.model.eyes = {}
+    session.model.meta.pop("eye", None)
+    session._save_profile()
+    pushed = []
+    s2 = TrackerSession(lambda: FakeTracker(), UserStore(tmp_path), push=pushed.append)
+    assert s2.handle_command({"type": "profile_load"})[0]["loaded"]
+    s2.wait_for_job()
+    assert set(s2.model.eyes) == {"left", "right"}
+    assert pushed and pushed[-1]["personal"]["eye_models"]["available"] == ["left", "right"]
+    # ...and they were saved with the profile.
+    model, _, _ = s2.profiles.load()
+    assert set(model.eyes) == {"left", "right"}

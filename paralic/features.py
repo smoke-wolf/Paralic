@@ -36,6 +36,16 @@ NUM_FEATURES = len(FEATURE_NAMES)
 # outlier rejection during calibration).
 EYE_FEATURE_IDX: tuple[int, ...] = (0, 1, 2, 3)
 
+# Inputs of the one-eye ("monocular") gaze networks: that eye's features plus
+# the head pose. They keep the cursor moving while the other eye is closed
+# (a wink held to drag something) and serve people whose other eye does not
+# track reliably (a squint, a droopy lid, an eye patch).
+HEAD_FEATURE_IDX: tuple[int, ...] = (14, 15, 16, 17, 18, 19)
+EYE_INPUTS: dict[str, tuple[int, ...]] = {
+    "right": (0, 1, 4, 10, 11, 12, 13) + HEAD_FEATURE_IDX,
+    "left": (2, 3, 5, 6, 7, 8, 9) + HEAD_FEATURE_IDX,
+}
+
 # Typical noise / movement scale of each feature. Used as a lower bound for the
 # standard deviation when standardising, so that a feature that barely changed
 # during calibration (e.g. head position when the user kept perfectly still)

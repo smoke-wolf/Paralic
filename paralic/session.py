@@ -6,8 +6,11 @@ Every browser tab that connects to the WebSocket gets its own
 1. decodes the JPEG sent by the browser,
 2. runs MediaPipe FaceLandmarker (face mesh + iris + blendshapes + head pose),
 3. extracts eye / head features,
-4. updates the blink detector (single and double blinks),
-5. predicts the on-screen gaze point with GazeNet,
+4. updates the blink detector (single and double blinks, long closes) and the
+   wink detector (one eye closed: short winks, and held winks that work like
+   holding a mouse button down),
+5. predicts the on-screen gaze point with GazeNet - with a one-eye network
+   while the other eye is closed,
 6. smooths it and freezes it through blinks,
 7. stores the frame as a calibration sample if the browser labelled it.
 
@@ -45,10 +48,11 @@ import numpy as np
 
 from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDetector, BlinkEvent
 from .calibration import (CalibrationData, CalibrationError, LabeledFrame, ProfileStore, evaluate_validation,
-                          fit_adjustment, fit_full_calibration)
+                          fit_adjustment, fit_eye_models, fit_full_calibration)
 from .features import extract_features, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
+from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, blink_signal, other_eye, wink_config
 from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, PersonalizationError, analyze_blinks,
                           analyze_experiment, experiment_arms, recommend_magnet, run_finetune, smoothing_params,
                           tune_smoothing)
@@ -64,6 +68,32 @@ SAVE_EVERY_EVENTS = 10
 LABEL_WINDOW_S = 0.45            # frames before the first blink that describe the fixation
 FIXATION_RADIUS_PX = 160.0       # ...and whose gaze estimate stayed near the final one
 MAX_BLINK_RECORDING = 30 * 40    # frames
+MAX_WINK_RECORDING = 30 * 60
+BLINK_MUTE_AFTER_WINK_S = 0.3    # ignore blinks while a reopening eye settles
+WINK_OFFSET_FRAMES = 6           # frames before a wink that align the one-eye network
+
+# Per-person gesture choices (stored in personal["gestures"]). The detection
+# settings are used here; the page reads the rest to decide what each gesture does.
+GESTURE_DEFAULTS = {
+    "left_hold": "drag",     # holding the left eye closed: drag | menu | off
+    "right_hold": "drag",    # holding the right eye closed
+    "left_quick": "off",     # a short wink of the left eye: off | click | menu
+    "right_quick": "off",
+    "long_close": "off",     # closing both eyes for about a second: off | menu | grab | click
+    "long_close_ms": 1000,
+    "hold_ms": 350,          # how long a wink must last to count as holding
+    "long_press_ms": 1000,   # holding still this long opens the menu instead of dragging
+    "dwell": False,          # click by resting the eyes on a button
+    "dwell_ms": 1000,
+    "tracking_eye": "auto",  # which network leads: auto | both | left | right
+}
+_GESTURE_CHOICES = {
+    "left_hold": ("drag", "menu", "off"), "right_hold": ("drag", "menu", "off"),
+    "left_quick": ("off", "click", "menu"), "right_quick": ("off", "click", "menu"),
+    "long_close": ("off", "menu", "grab", "click"), "tracking_eye": ("auto", "both", "left", "right"),
+}
+_GESTURE_RANGES = {"long_close_ms": (600, 3000), "hold_ms": (200, 1500), "long_press_ms": (500, 3000),
+                   "dwell_ms": (400, 3000)}
 
 # Reply message type of each command, so failures reach the same handler in the
 # browser as successes (the page waits for these types).
@@ -90,6 +120,9 @@ _REPLY_TYPES = {
     "experiment_reset": "experiment_plan",
     "personal_get": "personal",
     "personal_reset": "personal",
+    "gestures_set": "personal",
+    "wink_calibration_start": "wink_calibration_started",
+    "wink_calibration_finish": "wink_calibration_result",
 }
 
 
@@ -132,6 +165,12 @@ class _FrameRecord:
     features: Optional[np.ndarray] = None
     raw: Optional[np.ndarray] = None
     wall: float = 0.0
+    winking: Optional[str] = None     # eye that was closed in a (possible) wink
+
+    @property
+    def steady(self) -> bool:
+        """Both eyes open: the features describe normal gaze."""
+        return not self.closing and self.winking is None
 
 
 class TrackerSession:
@@ -146,6 +185,12 @@ class TrackerSession:
         self._push = push or (lambda msg: None)
         self._lock = threading.RLock()
         self.blink = BlinkDetector()
+        self.wink = WinkDetector()
+        self.blink_mode = "both"
+        self._wink_eye: Optional[str] = None       # open eye whose network leads during a wink
+        self._wink_offset = np.zeros(2)
+        self._blink_mute_until = 0.0
+        self._wink_recording: Optional[list[tuple]] = None
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
@@ -214,6 +259,7 @@ class TrackerSession:
             magnet = ({"radius_px": 0.0, "pull": 0.0} if mg.get("off") else
                       {"radius_px": round(float(mg["radius_px"]) * float(mg.get("scale", 1.0)), 1),
                        "pull": float(mg.get("pull", 0.3))})
+        signal = blink.get("signal") if blink.get("signal") in BLINK_SIGNALS else "both"
         return {
             "smoothing_level": round(level, 2),
             "auto_smoothing_level": round(auto_level, 2),
@@ -222,8 +268,16 @@ class TrackerSession:
             "max_closed_ms": float(blink.get("max_closed_ms", 700.0)) if personal_blink else 700.0,
             "double_gap_ms": gap,
             "personal_blink": personal_blink,
+            "blink_signal": signal,
+            "deep_rise": round(0.6 * float(blink["peak_rise"]), 3) if blink.get("peak_rise") else None,
             "magnet": magnet,
+            "gestures": self.gestures(),
         }
+
+    def gestures(self) -> dict:
+        """This person's gesture settings (defaults for anything not chosen)."""
+        g = self.personal.get("gestures") or {}
+        return {**GESTURE_DEFAULTS, **{k: v for k, v in g.items() if k in GESTURE_DEFAULTS}}
 
     def _apply_effective(self) -> None:
         e = self.effective()
@@ -233,6 +287,10 @@ class TrackerSession:
         cfg.min_threshold = e["min_threshold"]
         cfg.max_closed_ms = e["max_closed_ms"]
         cfg.double_gap_ms = e["double_gap_ms"]
+        cfg.deep_rise = e["deep_rise"]
+        cfg.long_close_ms = float(e["gestures"]["long_close_ms"])
+        self.blink_mode = e["blink_signal"]
+        self.wink.config = wink_config(self.personal, e["gestures"])
 
     def _save_personal(self) -> None:
         try:
@@ -272,6 +330,15 @@ class TrackerSession:
             "experiments": p.get("experiments", {}),
             "learning": bool(self.settings.get("learning", True)),
             "job_running": self._job_running(),
+            "gestures": e["gestures"],
+            "blink_signal": e["blink_signal"],
+            "wink_profile": p.get("wink"),
+            "winks": {eye: self.wink.config.eye(eye).enabled for eye in ("left", "right")},
+            "eye_models": None if not self.model else {
+                "available": sorted(self.model.eyes),
+                "preferred": self.model.eye,
+                "cv_px": meta.get("eye_cv_px"),
+            },
         }
 
     def _record_model(self, source: str, **extra) -> None:
@@ -314,26 +381,54 @@ class TrackerSession:
         self._frame_times.append(t)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
         features = raw = None
+        winking = None
 
         if obs is None:
-            events = self.blink.update_missing(t)
+            events: list = self.blink.update_missing(t)
+            events += self.wink.update_missing(t)
+            if self.wink.winking is None:
+                self._wink_eye = None
             gaze, frozen = self.stabilizer.update(t, None, False)
             msg.update(face=False, gaze=_xy(gaze), raw=None, frozen=frozen, labeled=False)
             closing = False
         else:
             feats = extract_features(obs.points_px, obs.image_size, obs.blendshapes, obs.matrix)
             features = feats.vector
-            events = self.blink.update(t, feats.closure)
+            cl, cr = feats.closure_left, feats.closure_right
+            was_winking = self.wink.winking
+            wink_events = self.wink.update(t, cl, cr)
+            winking = self.wink.winking
+            if winking and winking != was_winking:
+                self._start_wink_tracking(t, winking)
+            elif winking is None:
+                self._wink_eye = None
+            # While one eye winks, only a closure of both eyes is a blink - and
+            # even those are ignored (the open eye may blink during a long drag).
+            in_wink = winking is not None or was_winking is not None
+            events = self.blink.update(t, min(cl, cr) if in_wink else blink_signal(cl, cr, self.blink_mode))
+            if in_wink or t < self._blink_mute_until:
+                events = [e for e in events if e.type == "blink_expired"]
+            for ev in wink_events:
+                if ev.type == "wink_start":
+                    self.blink.cancel()
+                elif ev.type == "wink_end":
+                    self._blink_mute_until = t + BLINK_MUTE_AFTER_WINK_S
+            events += wink_events
             state = self.blink.state()
             closing = state.closing
-            raw = self.model.predict(feats.vector)[0] if self.model is not None else None
-            gaze, frozen = self.stabilizer.update(t, raw, closing)
+            raw = self._predict(feats.vector)
+            gaze, frozen = self.stabilizer.update(t, raw, closing, hold=state.deep)
             if self._blink_recording is not None and len(self._blink_recording) < MAX_BLINK_RECORDING:
-                self._blink_recording.append((t, feats.closure))
+                self._blink_recording.append((t, cl, cr))
+            phase = header.get("gesture")
+            if (self._wink_recording is not None and phase in ("rest", "left", "right")
+                    and len(self._wink_recording) < MAX_WINK_RECORDING):
+                self._wink_recording.append((t, cl, cr, phase))
 
             labeled = False
             label = header.get("label")
-            if isinstance(label, dict) and not closing and label.get("kind") in ("cal", "head", "val", "adjust"):
+            if (isinstance(label, dict) and not closing and winking is None
+                    and label.get("kind") in ("cal", "head", "val", "adjust")):
                 try:
                     target = (float(label["x"]), float(label["y"]))
                     point = int(label.get("pt", 0))
@@ -351,8 +446,13 @@ class TrackerSession:
                 frozen=frozen,
                 labeled=labeled,
                 closure=round(feats.closure, 3),
+                cl=round(cl, 3),
+                cr=round(cr, 3),
                 closed=state.closed,
                 closing=closing,
+                wink=self.wink.pressed,
+                winking=winking,
+                net=(self._wink_eye or self._preferred_eye()) if raw is not None else None,
                 thr=[round(state.close_threshold, 3), round(state.open_threshold, 3)],
                 head=[round(feats.yaw_deg, 1), round(feats.pitch_deg, 1), round(feats.roll_deg, 1)],
                 dist=round(feats.distance_cm, 1),
@@ -362,12 +462,50 @@ class TrackerSession:
 
         self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze,
                                           features=None if features is None else features.copy(),
-                                          raw=raw, wall=self.wall()))
+                                          raw=raw, wall=self.wall(), winking=winking))
         msg["ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         msg["fps"] = self._fps()
         out = [msg]
-        out.extend(self._event_message(ev, frame_id) for ev in events)
+        out.extend(self._event_message(ev, frame_id, gaze) for ev in events)
         return out
+
+    # -- gaze prediction ---------------------------------------------------------
+    def _preferred_eye(self) -> str:
+        """The network that leads while both eyes are open."""
+        choice = self.gestures()["tracking_eye"]
+        if self.model is None:
+            return "both"
+        if choice in ("left", "right") and choice in self.model.eyes:
+            return choice
+        return "both" if choice == "both" else self.model.eye
+
+    def _predict(self, vector: np.ndarray) -> Optional[np.ndarray]:
+        if self.model is None:
+            return None
+        if self._wink_eye is not None:
+            if self._wink_eye not in self.model.eyes:
+                return None  # no one-eye network yet: hold the cursor still
+            return self.model.predict(vector, self._wink_eye)[0] + self._wink_offset
+        return self.model.predict(vector, self._preferred_eye())[0]
+
+    def _start_wink_tracking(self, t: float, winking: str) -> None:
+        """One eye started closing: let the open eye's network take over seamlessly.
+
+        The one-eye network is aligned with the usual one on the frames just
+        before the wink, so the cursor does not jump, and smoothing restarts
+        from where the cursor was before the closing eye disturbed it.
+        """
+        self._wink_eye = other_eye(winking)
+        self._wink_offset = np.zeros(2)
+        if self.model is not None and self._wink_eye in self.model.eyes:
+            before = [r.features for r in self._history
+                      if r.t < self.wink.since and r.steady and r.features is not None][-WINK_OFFSET_FRAMES:]
+            if before:
+                F = np.array(before)
+                usual = self.model.predict(F, self._preferred_eye())
+                one_eye = self.model.predict(F, self._wink_eye)
+                self._wink_offset = (usual - one_eye).mean(axis=0)
+        self.stabilizer.rewind(t, self.wink.since - self.stabilizer.rewind_s)
 
     def _fps(self) -> float:
         if len(self._frame_times) < 2:
@@ -375,28 +513,39 @@ class TrackerSession:
         span = self._frame_times[-1] - self._frame_times[0]
         return round((len(self._frame_times) - 1) / span, 1) if span > 0 else 0.0
 
-    def _event_message(self, ev: BlinkEvent, frame_id: Any) -> dict:
-        if ev.type == "double_blink":
+    def _event_message(self, ev, frame_id: Any, gaze: Optional[np.ndarray]) -> dict:
+        if isinstance(ev, WinkEvent):
+            msg = {"type": ev.type, "eye": ev.eye, "frame": frame_id, "duration_ms": round(ev.duration_ms)}
+            if ev.type in ("wink_start", "wink"):
+                pre = self._frame_before(ev.start - 0.05)
+                msg.update(pre_frame=pre.frame_id if pre else None, at=_xy(pre.gaze) if pre else None)
+            else:
+                msg.update(at=_xy(gaze), cancelled=ev.cancelled)
+            return msg
+        if ev.type in ("double_blink", "long_close"):
             pre = self._frame_before(ev.first_start)
-            return {
-                "type": "double_blink",
+            msg = {
+                "type": ev.type,
                 "frame": frame_id,
                 "pre_frame": pre.frame_id if pre else None,
                 "at": _xy(pre.gaze) if pre else None,
             }
+            if ev.type == "long_close":
+                msg["duration_ms"] = round(ev.duration_ms)
+            return msg
         if ev.type == "blink":
             return {"type": "blink", "n": ev.count, "frame": frame_id}
         return {"type": ev.type, "frame": frame_id}
 
     def _frame_before(self, t: Optional[float]) -> Optional[_FrameRecord]:
-        """Last frame with open eyes before time ``t`` (just before the first blink)."""
+        """Last frame with both eyes open before time ``t`` (just before a blink or wink)."""
         if t is None:
             return None
         best = None
         for rec in self._history:
             if rec.t >= t:
                 break
-            if not rec.closing:
+            if rec.steady:
                 best = rec
         return best
 
@@ -545,6 +694,8 @@ class TrackerSession:
         self.data = data
         self.profile_meta = meta
         self.stabilizer.reset()
+        if not model.eyes:
+            self._start_eye_models()  # saved before one-eye networks existed
         return [{"type": "profile", "loaded": True, **meta, "personal": self.personal_view()}]
 
     def _cmd_profile_delete(self, cmd: dict) -> list[dict]:
@@ -568,8 +719,11 @@ class TrackerSession:
         self.profile_meta = {}
         self._overrides = {}
         self._blink_recording = None
+        self._wink_recording = None
+        self._wink_eye = None
         self.stabilizer.reset()
         self.blink.reset()
+        self.wink.reset()
         self._apply_effective()
 
     def _cmd_users(self, cmd: dict) -> list[dict]:
@@ -629,7 +783,7 @@ class TrackerSession:
             return float(np.hypot(*(r.raw - anchor.raw))) <= FIXATION_RADIUS_PX
 
         window = [r for r in list(self._history)[:idx + 1]
-                  if r.features is not None and not r.closing and anchor.t - r.t <= LABEL_WINDOW_S
+                  if r.features is not None and r.steady and anchor.t - r.t <= LABEL_WINDOW_S
                   and same_fixation(r)]
         if len(window) < 4:
             return skip("eyes were not steady")
@@ -719,6 +873,34 @@ class TrackerSession:
         self._job.start()
         return True
 
+    def _start_eye_models(self) -> bool:
+        """Train the one-eye networks for a model that has none (in the background)."""
+        if self._job_running() or self.model is None:
+            return False
+        model = self.model
+        candidate = model.clone()
+        snapshot = self.data.copy()
+
+        def run() -> None:
+            try:
+                fit_eye_models(candidate, snapshot)
+            except Exception:
+                log.info("Could not train the one-eye networks", exc_info=True)
+                return
+            with self._lock:
+                if self.model is not model:
+                    return
+                model.eyes = candidate.eyes
+                for key in ("eye", "eye_cv_px"):
+                    model.meta[key] = candidate.meta[key]
+                self._save_profile()
+                view = self.personal_view()
+            self._push({"type": "personal", "ok": True, "personal": view})
+
+        self._job = threading.Thread(target=run, name="paralic-eye-models", daemon=True)
+        self._job.start()
+        return True
+
     def _cmd_finetune(self, cmd: dict) -> list[dict]:
         if self.model is None:
             raise PersonalizationError("Calibrate first")
@@ -746,6 +928,43 @@ class TrackerSession:
         self._save_personal()
         self._apply_effective()
         return [{"type": "blink_calibration_result", "ok": True, **result, "personal": self.personal_view()}]
+
+    # -- gestures -------------------------------------------------------------------------------------
+    def _cmd_gestures_set(self, cmd: dict) -> list[dict]:
+        patch = cmd.get("gestures")
+        if not isinstance(patch, dict):
+            raise PersonalizationError("No gesture settings")
+        g = dict(self.personal.get("gestures") or {})
+        for key, value in patch.items():
+            if key in _GESTURE_CHOICES and value in _GESTURE_CHOICES[key]:
+                g[key] = value
+            elif key in _GESTURE_RANGES and isinstance(value, (int, float)) and not isinstance(value, bool):
+                lo, hi = _GESTURE_RANGES[key]
+                g[key] = int(np.clip(value, lo, hi))
+            elif key == "dwell" and isinstance(value, bool):
+                g[key] = value
+            elif key in ("left_forced", "right_forced") and isinstance(value, bool):
+                g[key] = value
+        self.personal["gestures"] = g
+        self._save_personal()
+        self._apply_effective()
+        return [{"type": "personal", "ok": True, "personal": self.personal_view()}]
+
+    def _cmd_wink_calibration_start(self, cmd: dict) -> list[dict]:
+        self._wink_recording = []
+        return [{"type": "wink_calibration_started", "ok": True}]
+
+    def _cmd_wink_calibration_finish(self, cmd: dict) -> list[dict]:
+        samples, self._wink_recording = self._wink_recording or [], None
+        result = analyze_winks(samples)
+        self.personal["wink"] = result
+        # A fresh test decides again which eyes may wink.
+        g = self.personal.setdefault("gestures", {})
+        for eye in ("left", "right"):
+            g.pop(f"{eye}_forced", None)
+        self._save_personal()
+        self._apply_effective()
+        return [{"type": "wink_calibration_result", "ok": True, **result, "personal": self.personal_view()}]
 
     # -- A/B experiments -----------------------------------------------------------------------------
     def _experiment(self, cmd: dict) -> str:
@@ -862,6 +1081,9 @@ class TrackerSession:
                 self.personal["blink"]["gap_bias_ms"] = 0
         elif part == "blink":
             self.personal.pop("blink", None)
+        elif part == "gestures":
+            self.personal.pop("gestures", None)
+            self.personal.pop("wink", None)
         elif part == "learning":
             self.data.clear(["ft"])
             self._unsaved_events += 1

@@ -35,11 +35,13 @@ def portrait(width: int = 640) -> np.ndarray | None:
     return cv2.resize(img, (width, int(h * width / w)), interpolation=cv2.INTER_AREA)
 
 
-def close_eyes(img: np.ndarray, pts: np.ndarray) -> np.ndarray:
+def close_eyes(img: np.ndarray, pts: np.ndarray,
+               contours: tuple = (L.RIGHT_EYE_CONTOUR, L.LEFT_EYE_CONTOUR)) -> np.ndarray:
+    """Paint the eyes in ``contours`` closed (both by default; pass one contour for a wink)."""
     import cv2
 
     out = img.copy()
-    for contour in (L.RIGHT_EYE_CONTOUR, L.LEFT_EYE_CONTOUR):
+    for contour in contours:
         poly = pts[list(contour)]
         x0, y0 = poly.min(axis=0)
         x1, y1 = poly.max(axis=0)
