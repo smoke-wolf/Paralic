@@ -208,6 +208,56 @@ def advice(points: list, screen: Optional[dict] = None, limit: int = 2) -> list[
     return findings_for(parts)[:limit] if parts else []
 
 
+def hand_summary(events: list) -> dict:
+    """Hand mode: what the pinches did, and the last hand setup."""
+    pinches = clicks = ended = scrolls_in = palms = 0
+    scrolling = False
+    setup: dict = {}
+    for e in events:
+        d = e.get("data") if isinstance(e.get("data"), dict) else {}
+        typ = e.get("type")
+        if e.get("kind") == "event" and d.get("hand"):
+            if typ == "blink" and d.get("n") == 1:
+                pinches += 1
+                scrolling = False
+            elif typ == "double_blink":
+                clicks += 1
+            elif typ == "blink_expired":
+                ended += 1
+                scrolls_in += int(scrolling)
+        if e.get("kind") == "event" and typ == "hand_scroll":
+            scrolling = True
+        if e.get("kind") == "event" and typ == "hand_palm":
+            palms += 1
+        if e.get("kind") == "reply" and typ == "hand_calibration_result" and d.get("ok"):
+            setup = {k: d.get(k) for k in ("pointing_error_px", "pinch_tuned", "pinch_on", "pinch_off", "points")}
+    return {"pinches": pinches, "clicks": clicks, "scrolls": scrolls_in, "other_pinches": max(0, ended - scrolls_in),
+            "palm_toggles": palms, "setup": setup}
+
+
+def _hand_findings(h: dict) -> list[str]:
+    out = []
+    setup = h["setup"]
+    if not setup:
+        out.append("No hand setup in this recording: without one the whole camera picture is the pointing range "
+                   "(Settings → Redo hand setup).")
+    else:
+        err = setup.get("pointing_error_px")
+        if isinstance(err, (int, float)) and err >= 60:
+            out.append(f"The hand setup's pointing is off by about {round(err)} px on dots it was not fitted to: "
+                       "re-point (Settings → Re-point), moving the whole hand comfortably to each dot.")
+        if setup.get("pinch_tuned") is False:
+            out.append("The pinch uses the standard thresholds (the setup could not tell your open hand from your "
+                       "pinch): redo the full hand setup and pinch fully a few times.")
+    if h["pinches"] >= 5 and h["clicks"] < 0.6 * (h["pinches"] - h["scrolls"]):
+        out.append(f"Only {h['clicks']} of {h['pinches'] - h['scrolls']} pinches clicked; the others were held longer "
+                   "than 0.7 s or moved the hand - pinch quickly and let go (to scroll, pinch and move up or down).")
+    if h["palm_toggles"] >= 4:
+        out.append(f"The open-hand pause switched {h['palm_toggles']} times: if that was not on purpose, point with "
+                   "the other fingers folded or together.")
+    return out
+
+
 def _condition_findings(c: dict, learning: dict, mode: str) -> list[str]:
     out = []
     thing = "hand" if mode == "hand" else "face"
@@ -247,7 +297,7 @@ def _condition_findings(c: dict, learning: dict, mode: str) -> list[str]:
 def diagnose(view) -> dict:
     """The diagnosis of a recording (``view``: an inspector RecordingView)."""
     rec = view.rec
-    screen = rec.screen() if callable(getattr(rec, "screen", None)) else None
+    screen = rec.screen
     checks = []
     for s in view.calibrations().get("sessions", []):
         val = s.get("validation") or {}
@@ -258,12 +308,17 @@ def diagnose(view) -> dict:
                        "findings": findings_for(parts)})
     conditions = frame_conditions(rec)
     learning = learning_summary(rec.events())
+    mode = rec.mode
+    if mode == "hand":
+        hand = hand_summary(rec.events())
+        findings = _hand_findings(hand) + _condition_findings(conditions, learning, mode)
+        return {"checks": [], "conditions": conditions, "learning": learning, "hand": hand, "findings": findings}
     findings = list(checks[-1]["findings"]) if checks else []
     if len(checks) >= 2:
         first, last = checks[0]["mean_error_px"], checks[-1]["mean_error_px"]
         trend = "improved" if last < 0.9 * first else "got worse" if last > 1.1 * first else "stayed about the same"
         findings.append(f"Across the {len(checks)} accuracy checks the error {trend}: {round(first)} → {round(last)} px.")
-    findings += _condition_findings(conditions, learning, rec.mode() if callable(getattr(rec, "mode", None)) else "eyes")
+    findings += _condition_findings(conditions, learning, mode)
     if not checks:
         findings.insert(0, "No accuracy check in this recording: a calibration, quick adjust or 'check my accuracy' "
                            "measures it on fresh dots.")
@@ -277,6 +332,12 @@ def report(diag: dict, name: str = "") -> str:
                      f"shift {c['shift_px']} ({round(100 * c['shift_share'])}%), scatter {c['scatter_px']} px, "
                      f"jitter {c['jitter_px']} px (noise floor {c['noise_floor_px']} px), "
                      f"left-right {c['horizontal_px']} / up-down {c['vertical_px']} px")
+    hand = diag.get("hand")
+    if hand:
+        st = hand["setup"] or {}
+        lines.append(f"Hand: {hand['pinches']} pinches, {hand['clicks']} clicks, {hand['scrolls']} scrolls, "
+                     f"{hand['palm_toggles']} pause switches; setup pointing {st.get('pointing_error_px')} px, "
+                     f"pinch {'tuned' if st.get('pinch_tuned') else 'standard'}")
     c = diag["conditions"]
     lines += ["", f"Frames {c['frames']}, found {c['found_pct']}%, {c['fps']} fps, glare {c['glare_pct']}%, "
                   f"glasses {c['glasses_pct']}%, others in view {c['others_in_view_pct']}%, "

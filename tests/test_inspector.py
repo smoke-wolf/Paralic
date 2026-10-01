@@ -641,7 +641,8 @@ def test_the_diagnosis_takes_each_accuracy_check_apart(client, demos, eyes):
     assert len(d["checks"]) == 2 and d["findings"] and d["conditions"]["frames"] > 1000
     assert all(isinstance(f, str) and f for f in d["findings"])
     hand = client.get(f"/api/recordings/{demos['hand'].name}/diagnosis").json()
-    assert hand["checks"] == [] and "No accuracy check" in hand["findings"][0]
+    assert hand["checks"] == [] and hand["hand"]["pinches"] >= 5 and hand["hand"]["clicks"] >= 1
+    assert hand["hand"]["setup"] and isinstance(hand["findings"], list)
 
 
 def test_an_export_holds_no_images_or_face_points(demos, eyes, tmp_path):
