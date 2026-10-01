@@ -628,3 +628,34 @@ def test_talk_suggestions_follow_each_word(page):
     for pick in ("I", "need"):
         page.locator(".suggestion", has_text=pick).first.click()
     assert words()[:2] == ["help", "water"] or words()[:2] == ["water", "help"]
+
+
+def test_trail_shooter_blink_to_shoot(page):
+    """Opened from a link (before the tracker exists), the game still hears
+    blinks: aim at a creature and blink to shoot it; P pauses."""
+    page.goto(page.url.split("#")[0] + "#/shooter")
+    page.reload()
+    page.wait_for_function("window.paralic && window.paralic.state.started")
+    page.locator(".shooter-levels .btn").first.click()
+    game = "document.querySelector('.shooter-arena').shooter"
+    nearest = f"""() => {{ const s = {game}; const g = s.game; const c = document.querySelector('.shooter-canvas');
+        const r = c.getBoundingClientRect(); const k = r.width / c.width;
+        const f = g.foes.filter(f => f.alive && f.screen).sort((a, b) => a.z - b.z)[0];
+        return f ? {{x: r.left + f.screen.x * k, y: r.top + f.screen.y * k}} : null; }}"""
+    page.wait_for_function(f"({nearest})() !== null", timeout=20000)
+    for _ in range(8):
+        target = page.evaluate(nearest)
+        if target:
+            page.mouse.move(target["x"], target["y"], steps=4)
+            page.wait_for_timeout(350)
+            page.keyboard.press("b")
+        page.wait_for_timeout(500)
+        if page.evaluate(f"{game}.game.hits") > 0:
+            break
+    assert page.evaluate(f"{game}.game.hits") > 0 and page.evaluate(f"{game}.game.score") > 0
+    assert page.evaluate("document.body.classList.contains('game-aiming')")
+    page.keyboard.press("p")
+    assert page.evaluate(f"{game}.state") == "paused"
+    assert not page.evaluate("document.body.classList.contains('game-aiming')")
+    page.locator(".shooter-menu .btn", has_text="Levels").click()
+    assert page.evaluate(f"{game}.state") == "menu"

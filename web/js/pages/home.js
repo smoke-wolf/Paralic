@@ -10,6 +10,7 @@ const TILES = [
   { href: '#/arrange', icon: 'move', title: 'Arrange', text: 'Drag the planets into order — hold one eye closed to drag.', hands: 'Put the planets in order — pinch one to pick it up, pinch again to put it down.', cls: 'warm' },
   { href: '#/draw', icon: 'brush', title: 'Draw', text: 'Paint with your gaze while one eye stays closed.', cls: 'violet', eyesOnly: true },
   { href: '#/practice', icon: 'target', title: 'Practice', text: 'Pop targets to sharpen your aim.' },
+  { href: '#/shooter', icon: 'bolt', title: 'Trail Shooter', text: 'Walk a trail at night and blink to stop the creatures.', hands: 'Walk a trail at night and pinch to stop the creatures.', cls: 'warm' },
   { href: '#/lab', icon: 'flask', title: 'Personalize', text: 'What Paralic learned about your eyes, and A/B tests to tune it.', hands: 'Your hand setup: how well pointing works, and a quick re-point.', cls: 'warm' },
   { href: '#/settings', icon: 'sliders', title: 'Settings', text: 'Gestures, dwell click, blink speed, smoothing and sounds.', hands: 'Eyes or hands, your hand setup, dwell click and sounds.', cls: 'violet' },
   { href: '#/help', icon: 'help', title: 'Help', text: 'Gestures, tips and troubleshooting.' },

@@ -28,8 +28,9 @@ import help from './pages/help.js';
 import arrange from './pages/arrange.js';
 import draw from './pages/draw.js';
 import lab from './pages/lab.js';
+import shooter from './pages/shooter.js';
 
-const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help, arrange, draw, lab };
+const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help, arrange, draw, lab, shooter };
 const params = new URLSearchParams(location.search);
 const MODE_KEY = 'paralic.mode';
 

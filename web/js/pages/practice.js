@@ -58,7 +58,8 @@ export default {
         h('div', { class: 'btn-row' },
           button(`Start level ${level}`, 'play', start, true),
           button('Follow a trail', 'target', () => pursuit.run('lissajous')),
-          button('Snake chase', 'play', () => pursuit.runSnake())),
+          button('Snake chase', 'play', () => pursuit.runSnake()),
+          button('Trail Shooter', 'bolt', () => app.navigate('#/shooter'))),
         h('p', { class: 'muted', style: { maxWidth: '48ch', margin: '18px auto 0', fontSize: '0.9em' }, html: sayHtml(
           'Smooth-pursuit modes: follow a moving dot with your eyes. They sharpen your tracking and, once you are calibrated, quietly fine-tune the model from the moments you stay locked on.',
           'Smooth-pursuit modes: follow a moving dot with your fingertip — good practice for smooth, steady pointing.') }));

@@ -19,8 +19,9 @@ improving while they use the site — and Paralic recognises who is sitting at t
 What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 The site itself is designed for eye control: big targets, a Solar System to explore, articles to read,
-a *Talk* page with spoken phrases and an eye-typing keyboard with word prediction, a drag-and-drop game,
-a drawing canvas, a target-practice game, and settings you can change with your eyes.
+a *Talk* page with 175 spoken phrases and an eye-typing keyboard whose word prediction learns your own words,
+a drag-and-drop game, a drawing canvas, a target-practice game, *Trail Shooter* (walk a trail at night and
+blink to stop the creatures), and settings you can change with your eyes.
 
 ---
 

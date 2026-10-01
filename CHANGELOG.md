@@ -55,9 +55,15 @@ your eyes or with your hand.
   the top-left corner for a second, or turn it off in Settings.
 
 ### The website
-- Explore the Solar System, read articles, and use *Talk*: spoken phrases with
-  natural voices, plus an eye-typing keyboard with word prediction. Also a
-  drag-and-drop game, a drawing canvas, target practice, Settings and Help.
+- Explore the Solar System, read articles, and use *Talk*: 175 spoken phrases
+  in 14 groups with natural voices, plus an eye-typing keyboard. Its word
+  prediction covers about 1,600 words and suggests the next word after 131
+  common words. It also learns the words and word pairs you use most.
+- **Trail Shooter:** walk a preset trail at night and stop the creatures
+  before they reach you. Look at one and blink to shoot; with a hand, point and
+  pinch. There are four levels, from *Forest path* to *Night ridge*.
+- Also a drag-and-drop game, a drawing canvas, target practice, Settings and
+  Help.
 - On macOS a small launcher window starts Paralic and has a Quit button.
   Calibration runs full screen.
 
