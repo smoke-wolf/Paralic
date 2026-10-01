@@ -238,7 +238,7 @@ def test_missing_parts_are_tolerated(demos, tmp_path):
     odd = tmp_path / "odd" / "20261001-093000-Sam-eyes"
     odd.mkdir(parents=True)
     (odd / "frames.jsonl").write_text('{"i": 1, "t": 5.0, "msg": {"face": true, "cl": NaN}}\n')
-    frames = TestClient(create_app(tmp_path / "odd")).get(f"/api/recordings/{odd.name}/frames").json()["frames"]
+    frames = TestClient(create_app(tmp_path / "odd"), base_url="http://localhost:8100").get(f"/api/recordings/{odd.name}/frames").json()["frames"]
     assert frames[0]["msg"] == {"face": True, "cl": None}
 
 
@@ -391,7 +391,7 @@ def test_hand_trace_reads_the_recogniser_measurements():
 
 @pytest.fixture(scope="module")
 def client(demos):
-    return TestClient(create_app(demos["data"]))
+    return TestClient(create_app(demos["data"]), base_url="http://localhost:8100")
 
 
 def test_api_lists_and_opens_recordings(client, demos, eyes):
@@ -602,3 +602,13 @@ def test_the_inspector_plays_steps_and_draws_every_panel(chromium, inspector_url
         assert errors == []
     finally:
         ctx.close()
+
+
+def test_only_this_computers_address_is_answered(tmp_path):
+    """Recordings hold faces: a site that points its own domain at 127.0.0.1
+    (DNS rebinding) gets nothing."""
+    app = create_app(tmp_path)
+    for base, ok in (("http://localhost:8100", True), ("http://127.0.0.1:8100", True), ("http://[::1]:8100", True),
+                     ("http://evil.example:8100", False), ("http://localhost.evil.example:8100", False)):
+        r = TestClient(app, base_url=base).get("/api/recordings")
+        assert (r.status_code == 200) is ok, (base, r.status_code)

@@ -32,11 +32,12 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..recording import LIVE_S, Recording, RecordingError, is_recording, recordings_root
+from ..server import host_allowed
 from .views import RecordingView, jsonable
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -139,9 +140,15 @@ def create_app(data_dir: Path, *, root: Optional[Path] = None) -> FastAPI:
 
     @app.middleware("http")
     async def no_cache(request, call_next):
+        # Recordings hold camera images of faces: answer only requests made to
+        # this computer's own address (no other site can rebind its domain here).
+        if not host_allowed(request.headers.get("host")):
+            return PlainTextResponse("The Inspector answers only on this computer's own address.", status_code=403)
         response = await call_next(request)
         if request.url.path.startswith("/api/") and "/video/" not in request.url.path:
             response.headers["Cache-Control"] = "no-cache"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+        response.headers["X-Content-Type-Options"] = "nosniff"
         return response
 
     @app.get("/api/recordings")

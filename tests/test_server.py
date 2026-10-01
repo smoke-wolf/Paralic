@@ -115,8 +115,23 @@ def test_command_errors_do_not_end_the_session(client, monkeypatch):
 
 def test_missing_model_reports_fatal(tmp_path):
     app = create_app(data_dir=tmp_path, tracker_factory=None, model_error="model missing")
-    with TestClient(app, client=("127.0.0.1", 50000)) as c:
+    with TestClient(app, base_url="http://localhost:8000", client=("127.0.0.1", 50000)) as c:
         assert c.get("/api/status").json()["error"] == "model missing"
         with c.websocket_connect("/ws") as ws:
             msg = json.loads(ws.receive_text())
             assert msg == {"type": "fatal", "error": "model missing"}
+
+
+def test_pages_only_under_this_computers_address(tmp_path):
+    """No other site can point its domain at this computer and read the pages (DNS rebinding)."""
+    from paralic.server import host_allowed
+
+    app = create_app(data_dir=tmp_path, tracker_factory=None)
+    assert TestClient(app, base_url="http://localhost:8000").get("/api/status").status_code == 200
+    assert TestClient(app, base_url="http://evil.example:8000").get("/api/status").status_code == 403
+    assert TestClient(app, base_url="http://evil.example:8000").get("/").status_code == 403
+    assert host_allowed("[::1]:8000") and host_allowed("127.0.0.1:8000") and not host_allowed(None)
+    assert host_allowed("evil.example:8000", "*") and not host_allowed("evil.example", {"localhost"})
+    # Served on every interface (--host 0.0.0.0): any name.
+    open_app = create_app(data_dir=tmp_path, tracker_factory=None, allowed_hosts="*")
+    assert TestClient(open_app, base_url="http://192.168.1.20:8000").get("/api/status").status_code == 200

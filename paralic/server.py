@@ -12,7 +12,7 @@ from typing import Callable, Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
@@ -55,6 +55,24 @@ def _origin_allowed(origin: Optional[str], host_header: Optional[str], client_ho
     if parsed.netloc.lower() != host_header.lower():
         return False
     return allowed_hosts == "*" or hostname.lower() in allowed_hosts
+
+
+def host_allowed(host_header: Optional[str], allowed_hosts=LOCAL_HOSTS) -> bool:
+    """May a request naming ``host_header`` be answered?
+
+    Pages are only served under the host names this server is meant to be
+    reached by, so a web page elsewhere cannot point its own domain at this
+    computer (DNS rebinding) and read what is served here.
+    """
+    if allowed_hosts == "*":
+        return True
+    if not host_header:
+        return False
+    try:
+        name = urlparse(f"//{host_header}").hostname
+    except ValueError:
+        return False
+    return bool(name) and name.lower() in allowed_hosts
 
 
 def _unavailable(error: Optional[str]) -> Callable[[], FaceTracker]:
@@ -120,6 +138,8 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
 
     @app.middleware("http")
     async def no_cache(request, call_next):
+        if not host_allowed(request.headers.get("host"), allowed_hosts):
+            return PlainTextResponse("Paralic answers only under this computer's own address.", status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-cache"
         return response
