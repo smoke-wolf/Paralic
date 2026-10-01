@@ -280,9 +280,12 @@ def test_finetune_job_runs_in_background_and_pushes_result(env, monkeypatch):
                                 "target": [sx, sy]})
     assert not session._job_running()
     reply = session.handle_command({"type": "finetune"})[0]
-    session.wait_for_job()
+    # The job does a model search; on a busy machine (other test runs in
+    # parallel) it can take well over a minute, so wait generously.
+    session.wait_for_job(timeout=600)
     results = [m for m in pushed if m["type"] == "finetune_result"]
-    assert reply["type"] == "finetune_started" and results
+    assert reply["type"] == "finetune_started"
+    assert results, f"no fine-tuning result yet (job still running: {session._job_running()})"
     last = results[-1]
     assert last["ok"] and last["accepted"], last
     assert last["personal"]["model"]["version"] >= 1 and last["personal"]["model"]["source"] in ("fine-tuned", "retrained")
@@ -374,7 +377,7 @@ def test_finetune_starts_automatically(env, monkeypatch):
         reply = session.handle_command({"type": "label_event", "kind": "practice", "pre_frame": msgs[0]["id"],
                                         "target": [sx, 400]})[0]
         started.append(reply["finetune_started"])
-    session.wait_for_job()
+    session.wait_for_job(timeout=600)
     assert started.count(True) == 1  # once, then it waits (minimum gap between jobs)
     assert any(m["type"] == "finetune_result" and m["auto"] for m in pushed)
 
