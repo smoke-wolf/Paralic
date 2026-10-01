@@ -487,3 +487,20 @@ def test_old_profiles_get_one_eye_networks_on_load(env, tmp_path):
     # ...and they were saved with the profile.
     model, _, _ = s2.profiles.load()
     assert set(model.eyes) == {"left", "right"}
+
+
+def test_dwell_experiment_adopts_a_new_dwell_time(env):
+    session, *_ = env
+    session.handle_command({"type": "gestures_set", "gestures": {"dwell": True, "dwell_ms": 1000}})
+    plan = session.handle_command({"type": "experiment_plan", "experiment": "dwell"})[0]
+    arms = {a["id"]: a for a in plan["arms"]}
+    assert arms["faster"]["dwell_ms"] == 750
+    rng = np.random.default_rng(2)
+    trials = []
+    for _ in range(10):
+        trials.append({"arm": "current", "time_ms": 2600 * float(np.exp(0.15 * rng.standard_normal()))})
+        trials.append({"arm": "faster", "time_ms": 1500 * float(np.exp(0.15 * rng.standard_normal()))})
+        trials.append({"arm": "slower", "time_ms": 3000 * float(np.exp(0.15 * rng.standard_normal()))})
+    res = session.handle_command({"type": "experiment_log", "experiment": "dwell", "trials": trials})[0]
+    assert res["decision"] == "adopt" and res["best"] == "faster"
+    assert res["personal"]["gestures"]["dwell_ms"] == 750

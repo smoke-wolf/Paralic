@@ -473,6 +473,10 @@ EXPERIMENTS = {
         "title": "Double-blink timing",
         "arms": ["current", "relaxed"],
     },
+    "dwell": {
+        "title": "Dwell-click time",
+        "arms": ["current", "faster", "slower"],
+    },
 }
 
 
@@ -498,5 +502,12 @@ def experiment_arms(name: str, effective: dict) -> list[dict]:
         return [
             {"id": "current", "label": "Current", "double_gap_ms": gap},
             {"id": "relaxed", "label": "Relaxed", "double_gap_ms": min(1100.0, gap + 200.0)},
+        ]
+    if name == "dwell":
+        dwell = float((effective.get("gestures") or {}).get("dwell_ms", 1000))
+        return [
+            {"id": "current", "label": "Current", "dwell_ms": round(dwell)},
+            {"id": "faster", "label": "Faster", "dwell_ms": round(max(400.0, 0.75 * dwell))},
+            {"id": "slower", "label": "Slower", "dwell_ms": round(min(3000.0, 1.33 * dwell))},
         ]
     raise KeyError(name)

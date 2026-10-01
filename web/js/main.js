@@ -6,6 +6,7 @@ import { clientToScreen } from './screen-space.js';
 import { icon } from './icons.js';
 import { EyeTracker, SimTracker } from './tracker.js';
 import { GazeController } from './gaze.js';
+import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
@@ -19,9 +20,11 @@ import talk from './pages/talk.js';
 import practice from './pages/practice.js';
 import settingsPage from './pages/settings.js';
 import help from './pages/help.js';
+import arrange from './pages/arrange.js';
+import draw from './pages/draw.js';
+import lab from './pages/lab.js';
 
-// The Personalization Lab page ('lab') is still being built and is not routed yet.
-const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help };
+const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help, arrange, draw, lab };
 const params = new URLSearchParams(location.search);
 
 class App {
@@ -135,7 +138,17 @@ class App {
   setPersonal(view) {
     if (!view) return;
     this.state.personal = view;
-    if (this.gaze) this.gaze.personalMagnet = view.magnet || null;
+    if (this.gaze) {
+      this.gaze.personalMagnet = view.magnet || null;
+      this.gaze.gestures = view.gestures || null;
+    }
+    const g = view.gestures;
+    if (this.tracker && this.tracker.simulated && g) {
+      // Demo mode imitates the server's gesture detection with the same settings.
+      this.tracker.holdMs = Number(g.hold_ms) || 350;
+      this.tracker.longCloseMs = Number(g.long_close_ms) || 1000;
+      if (view.winks) this.tracker.winkEnabled = { ...view.winks };
+    }
     this.emit('personal', view);
   }
 
@@ -194,6 +207,7 @@ class App {
     $('[data-action="back"]').addEventListener('click', () => this.router.back());
     $('#pause-btn').addEventListener('click', () => this.gaze && this.gaze.setPaused(!this.gaze.paused));
     window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && this.gestures) this.gestures.cancelAll();
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
       if (!this.state.started || this.calibrator.running || this.overlayRoot.children.length) return;
       if (e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return;
@@ -216,12 +230,15 @@ class App {
 
   // -- tracker setup -------------------------------------------------------------------
   createTracker(simulated) {
+    if (this.gestures) this.gestures.detach();
     if (this.gaze) this.gaze.destroy();
     const frameWidth = Number(params.get('fw')) || 960;
     this.tracker = simulated ? new SimTracker() : new EyeTracker({ frameWidth });
     this.state.simulated = simulated;
     this.gaze = new GazeController(this.tracker, { cursorEl: $('#gaze-cursor'), pageEl: this.pageEl, railEl: $('#scroll-rail') });
     this.gaze.addEventListener('activate', (e) => this.emit('activate', e.detail));
+    this.gestures = new GestureController(this);
+    this.gestures.attach(this.tracker);
     this.gaze.addEventListener('pausechange', (e) => {
       this.updatePauseUi(e.detail);
       this.emit('pausechange', e.detail);
@@ -241,7 +258,7 @@ class App {
     });
     this.tracker.on('users', (m) => this.applyUsersReply(m));
     for (const type of ['profile', 'validation_result', 'calibration_result', 'blink_calibration_result',
-      'experiment_result', 'personal', 'experiment_plan']) {
+      'wink_calibration_result', 'experiment_result', 'personal', 'experiment_plan']) {
       this.tracker.on(type, (m) => m && m.personal && this.setPersonal(m.personal));
     }
     this.tracker.on('finetune_result', (m) => {
@@ -385,7 +402,7 @@ class App {
     this.gaze.setActive(true);
     this.closeOverlay(ov);
     this.camera.setVisible(false);
-    toast('Demo mode: the mouse is your gaze. Press B twice quickly to "double blink".', 'ok', 7000);
+    toast('Demo mode: the mouse is your gaze. Press B twice quickly to "double blink"; hold Q or E to keep your left or right eye closed (drag).', 'ok', 8000);
   }
 
   /** A large mirrored camera preview with the eye outlines drawn on top. */
@@ -558,11 +575,11 @@ class App {
       return null;
     }
     if (mode === 'adjust' && !this.state.calibrated) mode = 'full';
-    if (mode === 'blink') {
+    if (mode === 'blink' || mode === 'wink') {
       try {
-        return await this.calibrator.run('blink');
+        return await this.calibrator.run(mode);
       } catch (err) {
-        toast(`Blink personalisation failed: ${err.message || err}`, 'bad', 6000);
+        toast(`The ${mode} test failed: ${err.message || err}`, 'bad', 6000);
         return null;
       }
     }

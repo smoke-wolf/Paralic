@@ -132,6 +132,8 @@ def test_experiment_arms_are_relative_to_current_settings():
     assert mg["stronger"]["magnet"]["radius_px"] == 150.0 and mg["off"]["magnet"]["radius_px"] == 0.0
     db = {a["id"]: a for a in experiment_arms("double_blink", eff)}
     assert db["relaxed"]["double_gap_ms"] == 750.0
+    dw = {a["id"]: a for a in experiment_arms("dwell", {**eff, "gestures": {"dwell_ms": 1000}})}
+    assert dw["faster"]["dwell_ms"] == 750 and dw["slower"]["dwell_ms"] == 1330
 
 
 # -- fine-tuning ------------------------------------------------------------------------------------

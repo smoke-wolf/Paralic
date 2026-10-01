@@ -6,7 +6,9 @@
 // fast as the server can process it without building up lag.
 //
 // The server replies with a "frame" message per frame (gaze position, blink
-// state, ...) plus events such as "blink" and "double_blink". It also answers
+// state, ...) plus events such as "blink", "double_blink", winks
+// ("wink_start" / "wink_end" while one eye is held closed, "wink" for a short
+// one) and "long_close" (both eyes closed for about a second). It also answers
 // commands (calibration, people, personalisation) and pushes the results of
 // background jobs such as fine-tuning ("finetune_result").
 
@@ -120,6 +122,7 @@ export class EyeTracker extends Channel {
     this.sentAt = new Map();
     this.latencyMs = 0;
     this.label = null;
+    this.gesture = null;
     this.overlay = false;
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { alpha: false });
@@ -160,6 +163,11 @@ export class EyeTracker extends Channel {
   /** Label attached to every captured frame (used during calibration). */
   setLabel(label) {
     this.label = label;
+  }
+
+  /** Phase of the wink test attached to every frame: "rest" | "left" | "right" | null. */
+  setGesturePhase(phase) {
+    this.gesture = phase;
   }
 
   onDisconnect() {
@@ -215,6 +223,7 @@ export class EyeTracker extends Channel {
     this.inFlightSince = performance.now();
     const header = { id };
     if (this.label) header.label = this.label;
+    if (this.gesture) header.gesture = this.gesture;
     if (this.overlay) header.overlay = true;
     this.canvas.toBlob((blob) => {
       if (!blob || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -231,10 +240,13 @@ export class EyeTracker extends Channel {
 }
 
 /**
- * Demo mode: the mouse plays the role of your eyes and the "B" key plays the
- * role of a blink (press it twice quickly to "double blink"). Handy to try the
- * website without a webcam. It emits the same events as EyeTracker and still
- * talks to the server for people and personalisation commands.
+ * Demo mode: the mouse plays the role of your eyes and keys play the role of
+ * the eyelids:
+ *   B        a blink (press it twice quickly to "double blink"; hold it about
+ *            a second for a long close of both eyes)
+ *   Q / E    hold to keep your left / right eye closed (a wink: hold to drag)
+ * Handy to try the website without a webcam. It emits the same events as
+ * EyeTracker and still talks to the server for people and personalisation.
  */
 export class SimTracker extends Channel {
   constructor() {
@@ -248,16 +260,37 @@ export class SimTracker extends Channel {
     this.closedUntil = 0;
     this.pendingBlink = null;
     this.blinkGapMs = 550;
+    this.holdMs = 350;          // personal wink hold time (set by the app)
+    this.longCloseMs = 1000;
+    this.winkEnabled = { left: true, right: true };
+    this.both = null;           // B held: {start, preFrame, ready}
+    this.wink = null;           // Q / E held: {eye, start, preFrame, started}
   }
 
   async start() {
     this.running = true;
-    this._onMove = (e) => { this.mouse = clientToScreen(e.clientX, e.clientY); };
+    // Only the real mouse is the "gaze": not the pointer events that eye presses dispatch.
+    this._onMove = (e) => { if (e.isTrusted) this.mouse = clientToScreen(e.clientX, e.clientY); };
+    const key = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return null;
+      if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return null;
+      return { b: 'both', q: 'left', e: 'right' }[e.key.toLowerCase()] || null;
+    };
     this._onKey = (e) => {
-      if ((e.key === 'b' || e.key === 'B') && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey) this.blink();
+      const which = key(e);
+      if (!which || e.repeat) return;
+      if (which === 'both') this.closeBoth();
+      else this.closeOne(which);
+    };
+    this._onKeyUp = (e) => {
+      const which = key(e);
+      if (!which) return;
+      if (which === 'both') this.openBoth();
+      else this.openOne(which);
     };
     window.addEventListener('pointermove', this._onMove);
     window.addEventListener('keydown', this._onKey);
+    window.addEventListener('keyup', this._onKeyUp);
     this.timer = setInterval(() => this.tick(), 33);
     this.connect();
   }
@@ -267,6 +300,7 @@ export class SimTracker extends Channel {
     clearInterval(this.timer);
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('keydown', this._onKey);
+    window.removeEventListener('keyup', this._onKeyUp);
     if (this.ws) this.ws.close();
   }
 
@@ -282,14 +316,32 @@ export class SimTracker extends Channel {
     this.label = label;
   }
 
+  setGesturePhase() {}
+
   tick() {
     const id = ++this.frameId;
     const now = performance.now();
-    const closed = now < this.closedUntil;
+    const closed = now < this.closedUntil || !!this.both;
     const gaze = this.mouse ? [this.mouse.x, this.mouse.y] : null;
+    const w = this.wink;
+    if (w && !w.started && now - w.start >= this.holdMs) {
+      w.started = true;
+      this.emit('wink_start', { type: 'wink_start', eye: w.eye, frame: id, pre_frame: w.preFrame, at: null,
+        duration_ms: Math.round(now - w.start) });
+    }
+    const b = this.both;
+    if (b && !b.ready && now - b.start >= this.longCloseMs) {
+      b.ready = true;
+      this.emit('long_close_ready', { type: 'long_close_ready', frame: id });
+    }
+    const shut = 0.9;
+    const cl = closed || (w && w.eye === 'left') ? shut : 0.12;
+    const cr = closed || (w && w.eye === 'right') ? shut : 0.12;
     this.emit('frame', {
-      type: 'frame', id, face: true, gaze, raw: gaze, frozen: closed, labeled: !!this.label && !closed,
-      closure: closed ? 0.9 : 0.12, closed, closing: closed, thr: [0.5, 0.35], fps: 30, ms: 0, head: [0, 0, 0], dist: 60,
+      type: 'frame', id, face: true, gaze, raw: gaze, frozen: closed, labeled: !!this.label && !closed && !w,
+      closure: closed ? shut : 0.12, cl, cr, closed, closing: closed, thr: [0.5, 0.35], fps: 30, ms: 0,
+      head: [0, 0, 0], dist: 60, winking: w ? w.eye : null, wink: w && w.started ? w.eye : null,
+      net: w ? (w.eye === 'left' ? 'right' : 'left') : 'both',
     });
     if (this.pendingBlink && !closed && now - this.pendingBlink.end > this.blinkGapMs) {
       this.pendingBlink = null;
@@ -297,21 +349,59 @@ export class SimTracker extends Channel {
     }
   }
 
-  blink() {
+  // -- both eyes (B) ---------------------------------------------------------------
+  closeBoth() {
+    if (this.both) return;
+    this.both = { start: performance.now(), preFrame: this.frameId, ready: false };
+  }
+
+  openBoth() {
+    const b = this.both;
+    if (!b) return;
+    this.both = null;
     const now = performance.now();
-    const preFrame = this.frameId;
-    this.closedUntil = now + 140;
-    setTimeout(() => {
-      const end = performance.now();
-      if (this.pendingBlink && now - this.pendingBlink.end <= this.blinkGapMs) {
-        const first = this.pendingBlink;
-        this.pendingBlink = null;
-        this.emit('blink', { type: 'blink', n: 2, frame: this.frameId });
-        this.emit('double_blink', { type: 'double_blink', frame: this.frameId, pre_frame: first.preFrame, at: null });
-      } else {
-        this.pendingBlink = { start: now, end, preFrame };
-        this.emit('blink', { type: 'blink', n: 1, frame: this.frameId });
-      }
-    }, 150);
+    const held = now - b.start;
+    if (held < 700) {
+      // A blink: keep the "eyes" closed for a natural ~140 ms, then report it.
+      this.closedUntil = Math.max(now, b.start + 140);
+      setTimeout(() => this.blinkDone(b.start, b.preFrame), Math.max(0, this.closedUntil - now) + 10);
+    } else if (held >= this.longCloseMs && held <= 6000) {
+      this.pendingBlink = null;
+      this.emit('long_close', { type: 'long_close', frame: this.frameId, pre_frame: b.preFrame, at: null,
+        duration_ms: Math.round(held) });
+    }
+  }
+
+  blinkDone(start, preFrame) {
+    const end = performance.now();
+    if (this.pendingBlink && start - this.pendingBlink.end <= this.blinkGapMs) {
+      const first = this.pendingBlink;
+      this.pendingBlink = null;
+      this.emit('blink', { type: 'blink', n: 2, frame: this.frameId });
+      this.emit('double_blink', { type: 'double_blink', frame: this.frameId, pre_frame: first.preFrame, at: null });
+    } else {
+      this.pendingBlink = { start, end, preFrame };
+      this.emit('blink', { type: 'blink', n: 1, frame: this.frameId });
+    }
+  }
+
+  // -- one eye (Q / E) ----------------------------------------------------------------
+  closeOne(eye) {
+    if (this.wink || !this.winkEnabled[eye]) return;
+    this.wink = { eye, start: performance.now(), preFrame: this.frameId, started: false };
+  }
+
+  openOne(eye) {
+    const w = this.wink;
+    if (!w || w.eye !== eye) return;
+    this.wink = null;
+    const held = performance.now() - w.start;
+    if (w.started) {
+      this.emit('wink_end', { type: 'wink_end', eye, frame: this.frameId, duration_ms: Math.round(held), at: null,
+        cancelled: false });
+    } else if (held >= 120) {
+      this.emit('wink', { type: 'wink', eye, frame: this.frameId, pre_frame: w.preFrame, at: null,
+        duration_ms: Math.round(held) });
+    }
   }
 }

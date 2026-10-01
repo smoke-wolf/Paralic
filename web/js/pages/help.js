@@ -19,6 +19,26 @@ const CARDS = [
     ],
   },
   {
+    icon: 'wink', title: 'Holding, dragging and the menu',
+    items: [
+      'Close one eye and keep it closed: that is like holding the mouse button down where you were looking.',
+      'Keep it closed and look somewhere else to drag (try Arrange), or to draw (try Draw). Open the eye to drop.',
+      'Keep looking at the same spot for a second instead: a menu opens (a right click) — Click, Pick up to move, Read aloud.',
+      'Open the eye again quickly without looking away: a click.',
+      'The cursor keeps following your open eye the whole time.',
+    ],
+  },
+  {
+    icon: 'blink', title: 'If winking or blinking is hard',
+    items: [
+      'Settings → Eye gestures → Test my winks checks each eye; an eye that can’t wink on its own is ignored.',
+      'Close both eyes for about a second: can open the menu, pick up / drop, or click.',
+      'Dwell click: rest your eyes on a button until the ring fills — no blinking at all.',
+      '“Pick up to move” in the menu carries a thing without holding; blink twice (or dwell) to drop it.',
+      'If one eye squints or droops, the tracker can follow the steadier eye (Tracking eye: Auto).',
+    ],
+  },
+  {
     icon: 'scroll', title: 'Scrolling',
     items: [
       'Look at the Scroll up or Scroll down zone on the right edge.',
@@ -43,7 +63,7 @@ const CARDS = [
   },
   {
     icon: 'keyboard', title: 'Keyboard shortcuts for helpers',
-    html: '<ul><li><kbd>C</kbd> full calibration</li><li><kbd>A</kbd> quick adjust</li><li><kbd>P</kbd> pause / resume</li><li><kbd>Esc</kbd> cancel a calibration</li><li><kbd>B</kbd> blink (mouse demo mode: press twice to click)</li><li><kbd>F11</kbd> full screen</li></ul>',
+    html: '<ul><li><kbd>C</kbd> full calibration</li><li><kbd>A</kbd> quick adjust</li><li><kbd>P</kbd> pause / resume</li><li><kbd>Esc</kbd> cancel a calibration</li><li><kbd>B</kbd> blink (mouse demo mode: press twice to click, hold 1 s for a long close)</li><li><kbd>Q</kbd> / <kbd>E</kbd> hold to keep the left / right eye closed (demo mode)</li><li><kbd>Esc</kbd> drop a carried item / close the menu</li><li><kbd>F11</kbd> full screen</li></ul>',
   },
   {
     icon: 'sun', title: 'Troubleshooting',

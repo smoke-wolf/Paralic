@@ -1063,6 +1063,9 @@ class TrackerSession:
             bl["gap_bias_ms"] = float(arm["double_gap_ms"]) - base
             self.settings["double_blink"] = "personal"
             return {"arm": arm_id, "double_gap_ms": arm["double_gap_ms"], "settings": {"doubleBlink": "personal"}}
+        if name == "dwell":
+            self.personal.setdefault("gestures", {})["dwell_ms"] = int(arm["dwell_ms"])
+            return {"arm": arm_id, "dwell_ms": arm["dwell_ms"], "settings": {}}
         raise PersonalizationError("Unknown experiment")
 
     # -- personal overview ---------------------------------------------------------------------------

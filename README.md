@@ -5,12 +5,18 @@ A Python server uses **neural networks** to track your eyes through an ordinary 
 
 * **look** somewhere and the cursor moves there (it gently snaps to the nearest button),
 * **blink twice** to click,
+* **hold one eye closed** to press and hold — look elsewhere to **drag**, keep still for a **right-click menu**,
 * **look at the arrows on the right edge** to scroll,
 * **blink twice on Pause** to rest your eyes, and blink twice again to resume.
 
+For people who find blinking or winking hard there are alternatives: **dwell click** (rest your eyes on a
+button), **closing both eyes for a second**, and a menu that can pick things up and drop them. Everything is
+**personalised per person**: each person who uses the computer gets their own gaze network, blink and wink
+thresholds and settings, which keep improving while they use the site.
+
 The site itself is designed for eye control: big targets, a Solar System to explore, articles to read,
-a *Talk* page with spoken phrases and an eye-typing keyboard with word prediction, a target-practice game,
-and settings you can change with your eyes.
+a *Talk* page with spoken phrases and an eye-typing keyboard with word prediction, a drag-and-drop game,
+a drawing canvas, a target-practice game, and settings you can change with your eyes.
 
 ---
 
@@ -42,7 +48,8 @@ Options: `--port 8080`, `--no-browser`, `--host`, `--model PATH`, `--data-dir DI
 If port 8000 is busy the next free one is used.
 
 > No webcam? Click **Try with a mouse** on the start screen (or open `http://localhost:8000/?demo`).
-> The mouse then plays the part of your eyes and pressing **B** twice quickly is a double blink.
+> The mouse then plays the part of your eyes: press **B** twice quickly for a double blink, hold **B** for a
+> second to close both eyes, and hold **Q** / **E** to keep your left / right eye closed.
 
 ## Using it
 
@@ -51,22 +58,71 @@ If port 8000 is busy the next free one is used.
 2. **Camera check** – centre your face; the eyes are outlined when they are found.
 3. **Blink twice to calibrate** – follow the dot with your eyes for about 30 seconds. When asked, keep
    looking at the centre dot and gently move your head (skip that if moving is hard for you — just keep looking).
-   Your personal neural network is trained, five more dots measure the accuracy, and the result is shown.
+   Your personal neural networks are trained, five more dots measure the accuracy, and finally you blink twice
+   three times when the dot turns purple, so double blinks are tuned to how *you* blink.
 4. **Start browsing** – look at it and blink twice.
 
 | Gesture | What it does |
 | --- | --- |
 | Look | Moves the cursor. The nearest button lights up. |
 | Blink twice | Clicks what was highlighted *just before the first blink*. A small “1” shows after the first blink. |
+| Hold one eye closed | Presses and holds where you were looking. Look elsewhere while it stays closed to **drag** (or draw); open it to drop. Keep looking at the same spot for a second for the **menu** (a right click: Click · Pick up to move · Read aloud). Open it again quickly to click. |
+| Close both eyes ~1 s *(optional)* | Menu, pick up / drop, or click — for people who cannot close one eye on its own. |
+| Rest your eyes on a button *(optional)* | Dwell click: a ring fills on the cursor, then it clicks. |
 | Look at *Scroll up / Scroll down* (right edge) | Scrolls; look further towards the arrow to go faster. Blink twice there to jump a page. |
 | Blink twice on *Pause* | Pauses (nothing gets clicked). Blink twice to resume. |
 
-The calibration is saved (numbers only, no images) in `data/profile.json`. Next time you can use it as is,
-do a **Quick adjust** (5 dots, ~8 seconds) or a full calibration. Quick adjust and full calibration are also
+Each person's calibration is saved (numbers only, no images) in `data/users/<id>/`. Several people can share
+the computer: Paralic asks who is using it. Next time you can use your calibration as is, do a
+**Quick adjust** (5 dots, ~8 seconds) or a full calibration. Quick adjust and full calibration are also
 on the Home and Settings pages.
 
 **Helper shortcuts** (for someone assisting): `C` full calibration · `A` quick adjust · `P` pause/resume ·
-`Esc` cancel calibration · `F11` full screen.
+`Esc` cancel calibration / drop a carried item / close the menu · `F11` full screen.
+
+## Accessibility: other ways to click, hold and drag
+
+Paralic is meant for people who cannot use their hands, and eyes differ a lot from person to person —
+a drooping lid, a squint, facial palsy, involuntary blinks, fatigue. So there is more than one way to do
+everything, chosen per person in **Settings → Eye gestures**:
+
+* **Winks work like a mouse button.** Close one eye and keep it closed (≥ 0.35 s, adjustable): that presses
+  where you were looking. Look somewhere else to drag; keep still for a second for the menu (a *long press*,
+  i.e. a right click); open it quickly for a click. Each eye can be *press & drag*, *right-click menu* or off.
+  On any page a held wink is an ordinary pressed pointer, so dragging and drawing work like with a mouse
+  (try **Arrange** and **Draw**).
+* **The cursor keeps following you while one eye is closed.** Besides the network that reads both eyes, every
+  calibration trains a network for each eye alone; during a wink the open eye's network takes over, aligned to
+  the usual one so the cursor does not jump.
+* **Test my winks** checks each eye ("close your left eye… now your right eye") and personalises the wink
+  thresholds — many people squint the other eye a little when winking, which is fine. An eye that cannot wink
+  on its own is ignored, so it never presses by accident.
+* **Closing both eyes for about a second** can open the menu, pick up / drop things, or click. It has to be a
+  real closure: looking at the bottom of the screen (which also lowers the lids) does not count.
+* **Dwell click** clicks by resting the eyes on a button (0.6–2 s) — no blinking at all.
+* **Pick up to move** (in the menu) carries an item without holding anything; blink twice, dwell or close your
+  eyes again to drop it.
+* **Short winks** can click or open the menu (off by default).
+* **Lopsided blinks and eyes that don't close fully**: the blink test chooses what to watch — both eyes, their
+  average, or one eye (e.g. with facial palsy) — and how lopsided ordinary blinks are, so that winks have to
+  be clearly more one-sided than blinks.
+* **A squint or an unreliable eye**: cross-validation compares "both eyes" with each eye alone and lets a single
+  eye lead when the other one misleads (e.g. a squint that comes and goes). *Tracking eye* in Settings can also
+  force one eye (an eye patch, a prosthetic eye).
+
+## Personalisation
+
+* **People** — each person has their own profile (`data/users/<id>/`): gaze networks, calibration data, blink
+  and wink thresholds, gestures, smoothing, magnet and experiment results.
+* **Learning from use** — the moments before you pop a practice target or click a button become labelled
+  training data. In the background a *challenger* network (the current one fine-tuned, and a fresh per-person
+  model search over several architectures) must beat the current *champion* on your most recent, held-out
+  clicks (paired sign-flip test, capped errors, ≥ 50 % win rate) before it replaces it; implausible labels are
+  dropped first.
+* **Auto settings** — cursor smoothing is tuned to your measured jitter, the button magnet to your accuracy.
+* **Personalization Lab** (`#/lab`) — shows what was learned and runs **blind A/B experiments** (smoothing,
+  magnet, double-blink timing, dwell time): each round is a shuffled, balanced set of targets where every
+  target secretly uses one variant; a permutation test decides, and a clear winner becomes your default.
 
 **Fully hands-free:** after the camera permission has been granted once, the site starts tracking without a
 click. For a kiosk-style setup, launch the browser in full screen, e.g.
@@ -87,10 +143,13 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
                                                   features: iris position in each eye, eyelid
                                                   opening, eye blendshapes, head rotation/position
                                                             │
-                                                  GazeNet: your personal neural network ─► screen x, y
+                                                  GazeNet: your personal neural networks ─► screen x, y
+                                                  (both eyes; each eye alone during a wink)
                                                             │
-                                                  One Euro smoothing · blink freeze · blink detector
- gaze cursor, snapping, clicks, scrolling ◄─ JSON ─ gaze point + "blink" / "double_blink" events
+                                                  One Euro smoothing · blink freeze · blink, wink and
+                                                  long-close detectors
+ gaze cursor, snapping, clicks, drags, menu ◄─ JSON ─ gaze point + "double_blink", "wink_start/end",
+ scrolling, dwell clicks                              "long_close" … events
 ```
 
 * **MediaPipe FaceLandmarker** (Google) finds the face, places 478 landmarks (10 around the irises),
@@ -104,9 +163,14 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
   out, so it measures how well the network interpolates to new screen positions) and three networks are
   averaged. The head-movement step of the calibration teaches it to compensate for head motion. Training
   takes about a second.
+* **One-eye networks**: the same architecture trained on one eye's features plus the head pose. They keep the
+  cursor moving during a wink and can lead for people whose other eye does not track reliably.
 * **Blink detection** (`paralic/blink.py`) combines MediaPipe's blink blendshapes with the eyelid geometry,
-  with thresholds that adapt to your eyes and to lids dropping when you look down. A double blink is two
-  blinks with a short pause between them; long eye closures never count.
+  with thresholds that adapt to your eyes and to lids dropping when you look down. By default it watches the
+  more open eye, so a wink is never a blink. A double blink is two blinks with a short pause between them;
+  long eye closures never count (but a deliberate, deep one of 1–6 s is a *long close*).
+* **Wink detection** (`paralic/gestures.py`) gives each eye its own adaptive baseline and looks for one eye
+  closing while the other stays open; held for a moment it becomes a press.
 * **Smoothing** (`paralic/filters.py`): a One Euro filter keeps the cursor steady while you look at something
   but quick when your eyes jump. When your eyes start to close the cursor freezes at where you were
   looking just before, so the double blink clicks the right thing.
@@ -128,9 +192,13 @@ real mouse keeps working as usual, which is handy for a helper).
 
 ## Settings (all changeable with your eyes)
 
-Cursor smoothing · snap to buttons · double-blink speed · blink sensitivity · scroll speed · learn from
-clicks (drift correction) · cursor size · camera preview · sounds · speaking speed.
-Missed double blinks → *Relaxed* speed or *High* sensitivity. Unwanted clicks → *Low* sensitivity or *Fast*.
+Per person: what holding each eye closed does · short winks · closing both eyes · dwell click and its time ·
+wink hold time · tracking eye · wink and blink tests.
+In this browser: cursor smoothing (Auto = learned) · snap to buttons (Auto) · double-blink speed (Personal) ·
+blink sensitivity (Personal) · scroll speed · learn from clicks (drift correction) · keep learning my eyes
+(fine-tuning) · cursor size · camera preview · sounds · speaking speed.
+Missed double blinks → run the blink test, or *Relaxed* speed / *High* sensitivity. Unwanted clicks → *Low*
+sensitivity or *Fast*, or switch to dwell click.
 
 ## Troubleshooting
 
@@ -157,19 +225,23 @@ machine.
 paralic/            Python package (server + eye tracking)
   __main__.py       command line entry point (python -m paralic)
   server.py         FastAPI app: website + /ws WebSocket
-  session.py        per-connection pipeline (decode → MediaPipe → features → blink → GazeNet → smoothing)
+  session.py        per-connection pipeline (decode → MediaPipe → features → blink/wink → GazeNet → smoothing)
   tracker.py        MediaPipe FaceLandmarker wrapper
   features.py       landmark → feature extraction
-  blink.py          blink / double-blink detector
+  blink.py          blink / double-blink / long-close detector
+  gestures.py       wink detector, blink signal choice, wink test analysis
   filters.py        One Euro filter + blink-aware cursor stabiliser
-  gazenet.py        GazeNet neural network (NumPy MLP, Adam, cross-validation, ensemble)
+  gazenet.py        GazeNet neural networks (NumPy MLP, Adam, cross-validation, ensemble, one-eye networks)
   calibration.py    calibration data, training, saved profile
+  personalize.py    blink test, auto smoothing/magnet, champion/challenger fine-tuning, A/B statistics
+  users.py          people and their files
   model_assets.py   model download
 web/                the website (vanilla HTML/CSS/JS modules, no build step)
   js/tracker.js     camera capture + WebSocket client (and the mouse demo mode)
-  js/gaze.js        gaze cursor, snapping, double-blink clicks, scroll rail, pause
-  js/calibration.js calibration / validation / quick adjust
-  js/pages/…        Home, Explore, Read, Talk, Practice, Settings, Help
+  js/gaze.js        gaze cursor, snapping, double-blink and dwell clicks, scroll rail, pause
+  js/gestures.js    press / drag / drop, the gaze menu ("right click"), drag lock
+  js/calibration.js calibration / validation / quick adjust / blink and wink tests
+  js/pages/…        Home, Explore, Read, Talk, Arrange, Draw, Practice, Lab, Settings, Help
 tests/              unit, integration (real MediaPipe) and browser tests
 ```
 

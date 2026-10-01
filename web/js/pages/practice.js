@@ -77,7 +77,7 @@ export default {
       }
       round.last = { x, y };
       const t = h('button', {
-        class: 'target', type: 'button', 'aria-label': 'Target',
+        class: 'target', type: 'button', 'aria-label': 'Target', 'data-learn': 'practice',
         style: { width: `${size}px`, height: `${size}px`, left: `${x - size / 2}px`, top: `${y - size / 2}px` },
       });
       t.addEventListener('click', () => hit(t));

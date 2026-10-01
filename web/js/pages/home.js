@@ -5,20 +5,25 @@ const TILES = [
   { href: '#/explore', icon: 'planet', title: 'Explore', text: 'Tour the eight planets of the Solar System.' },
   { href: '#/read', icon: 'book', title: 'Read', text: 'Articles you can scroll with your eyes.', cls: 'violet' },
   { href: '#/talk', icon: 'chat', title: 'Talk', text: 'Speak phrases out loud or type with your eyes.' },
-  { href: '#/practice', icon: 'target', title: 'Practice', text: 'Pop targets to sharpen your aim.', cls: 'warm' },
-  { href: '#/settings', icon: 'sliders', title: 'Settings', text: 'Blink speed, smoothing, sounds and calibration.', cls: 'violet' },
+  { href: '#/arrange', icon: 'move', title: 'Arrange', text: 'Drag the planets into order — hold one eye closed to drag.', cls: 'warm' },
+  { href: '#/draw', icon: 'brush', title: 'Draw', text: 'Paint with your gaze while one eye stays closed.', cls: 'violet' },
+  { href: '#/practice', icon: 'target', title: 'Practice', text: 'Pop targets to sharpen your aim.' },
+  { href: '#/lab', icon: 'flask', title: 'Personalize', text: 'What Paralic learned about your eyes, and A/B tests to tune it.', cls: 'warm' },
+  { href: '#/settings', icon: 'sliders', title: 'Settings', text: 'Gestures, dwell click, blink speed, smoothing and sounds.', cls: 'violet' },
   { href: '#/help', icon: 'help', title: 'Help', text: 'Gestures, tips and troubleshooting.' },
 ];
 
 const GESTURES = [
   ['eye', 'Look', 'Move the cursor — the nearest button lights up.'],
   ['blink', 'Blink twice', 'Click whatever is highlighted.'],
+  ['wink', 'Hold one eye closed', 'Press and hold: look away to drag, keep still for the menu.'],
   ['scroll', 'Look at the arrows', 'On the right edge, to scroll long pages.'],
-  ['pause', 'Pause', 'Rest your eyes; blink twice to resume.'],
 ];
 
 function calibrationSummary(app) {
-  if (app.state.simulated) return ['Demo mode', 'The mouse is your gaze. Press B twice quickly to double-blink.'];
+  if (app.state.simulated) {
+    return ['Demo mode', 'The mouse is your gaze. Press B twice quickly to double-blink; hold Q or E to keep your left or right eye closed.'];
+  }
   if (!app.state.calibrated) return ['Not calibrated yet', 'Calibrate so the cursor follows your eyes.'];
   const label = app.accuracyLabel();
   const names = { excellent: 'excellent', good: 'good', fair: 'fair', poor: 'poor' };

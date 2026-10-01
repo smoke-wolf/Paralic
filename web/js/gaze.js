@@ -11,13 +11,15 @@
 // * Looking at the scroll rail on the right scrolls the page.
 // * Optional drift correction: each click nudges a small offset so that the
 //   cursor lines up better with the buttons you actually pick.
+// * Optional dwell click (per person): resting the eyes on a button for a
+//   moment clicks it; a ring on the cursor fills up first.
 
 import { $$, clamp, distToRect, nearestPointIn, isVisible, h } from './dom.js';
 import { screenToClient } from './screen-space.js';
 import { getSettings } from './settings.js';
 import { sounds } from './sound.js';
 
-const TARGET_SELECTOR = 'a[href], button:not([disabled]), [data-gaze]';
+export const TARGET_SELECTOR = 'a[href], button:not([disabled]), [data-gaze]';
 
 // Snap radius is a fraction of the viewport diagonal.
 const SNAP = {
@@ -52,6 +54,14 @@ export class GazeController extends EventTarget {
     this.doubleBlinkHandlers = [];
     this.personalMagnet = null;  // {radius_px, pull} learned for the current person
     this.magnetOverride = null;  // set temporarily by an A/B experiment round
+    this.gestures = null;        // the person's gesture settings (dwell click etc.)
+    this.dwellOverride = null;   // dwell time (ms) set temporarily by an A/B experiment round
+    this.selector = TARGET_SELECTOR;
+    this.progress = 0;           // 0..1 ring on the cursor (dwell click / long press)
+    this.pressProgress = 0;
+    this.lastFrameId = null;
+    this.winking = null;
+    this._dwell = { el: null, since: 0, done: false };
     this._lastT = performance.now();
     this._armTimer = null;
 
@@ -104,6 +114,23 @@ export class GazeController extends EventTarget {
     this.bias = { x: 0, y: 0 };
   }
 
+  /** What can be highlighted: buttons and links normally, drop zones while dragging. */
+  setTargetSelector(selector) {
+    this.selector = selector || TARGET_SELECTOR;
+    this.clearHover();
+  }
+
+  /** Where the eyes were (and what was highlighted) at a given frame, or null. */
+  entryFor(frameId) {
+    return frameId !== null && frameId !== undefined ? this.history.get(frameId) || null : null;
+  }
+
+  get dwellMs() {
+    if (this.dwellOverride) return this.dwellOverride;
+    const g = this.gestures;
+    return g && g.dwell ? Number(g.dwell_ms) || 1000 : 0;
+  }
+
   /** Register a handler that gets double blinks first; return true to consume. */
   onDoubleBlinkFirst(fn) {
     this.doubleBlinkHandlers.push(fn);
@@ -115,6 +142,12 @@ export class GazeController extends EventTarget {
 
   get point() {
     return this.display ? { ...this.display } : null;
+  }
+
+  /** The cursor position before the magnet pulls it towards a button. */
+  get rawPoint() {
+    if (!this.pos) return null;
+    return { x: clamp(this.pos.x, 0, window.innerWidth), y: clamp(this.pos.y, 0, window.innerHeight) };
   }
 
   get hasGaze() {
@@ -131,7 +164,9 @@ export class GazeController extends EventTarget {
       if (!this.pos) this.pos = { ...this.target };
     }
     this.frozen = !!msg.frozen;
+    this.winking = msg.winking || null;
     if (msg.id !== undefined && msg.id !== null) {
+      this.lastFrameId = msg.id;
       this.history.set(msg.id, {
         hover: this.hover,
         x: this.target ? this.target.x : null,
@@ -178,10 +213,11 @@ export class GazeController extends EventTarget {
   }
 
   /** Perform a gaze click on `el` (or report a miss at `point`). */
-  activate(el, point, entry = null, preFrame = null) {
+  activate(el, point, entry = null, preFrame = null, via = 'blink') {
     const at = el ? centerOf(el.getBoundingClientRect()) : point;
     if (at) this.ripple(at);
-    this.dispatchEvent(new CustomEvent('activate', { detail: { element: el || null, point, preFrame } }));
+    if (via !== 'dwell') this.resetDwell();
+    this.dispatchEvent(new CustomEvent('activate', { detail: { element: el || null, point, preFrame, via } }));
     if (!el) {
       sounds.miss();
       return;
@@ -268,8 +304,48 @@ export class GazeController extends EventTarget {
     cursor.classList.toggle('size-small', s.cursorSize === 'small');
     cursor.classList.toggle('size-large', s.cursorSize === 'large');
     cursor.classList.toggle('stale', now - this.lastGazeAt > 500);
+    cursor.classList.toggle('winking', !!this.winking);
+
+    this.updateDwell(now);
+    const ring = Math.max(this.progress, this.pressProgress);
+    cursor.style.setProperty('--p', ring.toFixed(3));
+    cursor.classList.toggle('progress', ring > 0.02);
 
     this.updateScroll(p, s, dt, now);
+  }
+
+  /** Dwell click: resting on a button for `dwellMs` clicks it (once per visit). */
+  updateDwell(now) {
+    const ms = this.dwellMs;
+    const el = this.hover;
+    const d = this._dwell;
+    if (!ms || !el || this.frozen || this.winking || this.selector !== TARGET_SELECTOR
+        || el.closest('[data-scroll], [data-no-dwell]')) {
+      this.progress = 0;
+      if (!el) d.el = null;
+      return;
+    }
+    if (d.el !== el) {
+      d.el = el;
+      d.since = now;
+      d.done = false;
+    }
+    if (d.done) {
+      this.progress = 0;
+      return;
+    }
+    this.progress = Math.min(1, (now - d.since) / ms);
+    if (this.progress >= 1) {
+      d.done = true;
+      this.progress = 0;
+      this.activate(el, this.point, null, this.lastFrameId, 'dwell');
+    }
+  }
+
+  /** Restart the dwell timer (e.g. after a different kind of click). */
+  resetDwell() {
+    this._dwell = { el: this.hover, since: performance.now(), done: true };
+    this.progress = 0;
   }
 
   updateHover(p, s, now) {
@@ -278,7 +354,7 @@ export class GazeController extends EventTarget {
     let bestDist = Infinity;
     let bestArea = Infinity;
     let currentDist = Infinity;
-    for (const el of $$(TARGET_SELECTOR)) {
+    for (const el of $$(this.selector)) {
       if (el.closest('[inert], .gaze-ignore')) continue;
       const r = el.getBoundingClientRect();
       if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) continue;
@@ -296,7 +372,9 @@ export class GazeController extends EventTarget {
     }
     // Hysteresis: keep the current target unless the new one is clearly better.
     if (this.hover && best !== this.hover && currentDist <= radius * 1.4 + 1 && this.hover.isConnected) {
-      const clearlyBetter = (bestDist === 0 && currentDist > 0) || bestDist + 30 < currentDist;
+      // Looking at something inside the highlighted element (a card in a list) also counts.
+      const clearlyBetter = (bestDist === 0 && currentDist > 0) || bestDist + 30 < currentDist
+        || (bestDist === 0 && !!best && this.hover.contains(best));
       if (!best || !clearlyBetter) best = this.hover;
     }
     if (best !== this.hover) {

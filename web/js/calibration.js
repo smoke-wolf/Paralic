@@ -7,10 +7,17 @@
 //   3. the server trains your personal neural network,
 //   4. five more dots measure the accuracy (and are then used for a final fit).
 //
+//   5. blink twice three times when the dot turns purple: learns how you
+//      blink (thresholds, timing, and which eye signal to watch).
+//
 // Quick adjust (about 8 seconds): 5 dots that correct a saved calibration for
 // today's seating position.
+//
+// Blink test / wink test: the blink step on its own, and "close your left
+// eye, now your right eye" to learn how (and whether) each eye winks.
 
 import { h, sleep, toast } from './dom.js';
+import { icon } from './icons.js';
 import { clientToScreen, screenToClient } from './screen-space.js';
 import { sounds } from './sound.js';
 
@@ -71,7 +78,10 @@ export class Calibrator {
     const ov = this.app.openOverlay('calib solid');
     this.ui = this.buildUI(ov);
     try {
-      return mode === 'adjust' ? await this.runAdjust() : await this.runFull();
+      if (mode === 'adjust') return await this.runAdjust();
+      if (mode === 'blink') return await this.runBlinkTest();
+      if (mode === 'wink') return await this.runWinkTest();
+      return await this.runFull();
     } catch (err) {
       if (err instanceof Cancelled) {
         toast('Calibration cancelled');
@@ -80,6 +90,7 @@ export class Calibrator {
       throw err;
     } finally {
       this.tracker.setLabel(null);
+      this.tracker.setGesturePhase(null);
       this.running = false;
       this.app.closeOverlay(ov);
       this.app.gaze.setSuspended(false);
@@ -248,6 +259,8 @@ export class Calibrator {
     if (result.saved === false) {
       toast('Could not save the calibration to disk — it works until you reload the page.', 'warn', 7000);
     }
+    const blinks = await this.blinkStep();
+    if (blinks && !blinks.ok) toast(`Kept the standard blink settings: ${blinks.error}`, 'warn', 6000);
     const again = await this.showResults(result);
     if (again) return this.runFull();
     return { mode: 'full', fit, validation: result };
@@ -345,6 +358,139 @@ export class Calibrator {
     ov.classList.add('solid');
     if (choice === 'go') sounds.success();
     return choice === 'again';
+  }
+
+  // -- blinks --------------------------------------------------------------------------------
+  /** Blink twice whenever the dot turns purple (3 times): personalises the blink detector. */
+  async blinkStep() {
+    const started = await this.tracker.request({ type: 'blink_calibration_start' }, 'blink_calibration_started')
+      .catch(() => null);
+    if (!started || !started.ok) return null;
+    this.placeDot(0.5, 0.5);
+    this.ui.dot.classList.add('settle');
+    this.say('Last step: your blinks', 'Each time the dot turns purple, blink twice — like a relaxed “yes, yes”.', { top: true });
+    await this.wait(2600);
+    for (let i = 0; i < 3; i++) {
+      this.setProgress(3, i);
+      this.ui.dot.classList.add('blink-now');
+      sounds.point();
+      this.say('Blink twice now', '', { top: true });
+      await this.wait(1700);
+      this.ui.dot.classList.remove('blink-now');
+      this.say('', '');
+      await this.wait(1300);
+    }
+    this.setProgress(3, 3);
+    this.ui.dot.className = 'calib-dot done';
+    this.say('Learning your blinks…', h('div', { class: 'spinner' }));
+    const res = await this.tracker.request({ type: 'blink_calibration_finish' }, 'blink_calibration_result', 20000)
+      .catch((err) => ({ ok: false, error: err.message }));
+    this.say('');
+    return res;
+  }
+
+  async runBlinkTest() {
+    this.cancelled = false;
+    for (;;) {
+      const res = await this.blinkStep();
+      if (!res) throw new Error('Could not start the blink test');
+      if (res.ok) {
+        sounds.success();
+        const which = { both: 'both eyes', mean: 'both eyes (averaged)', left: 'your left eye', right: 'your right eye' };
+        toast(`Blinks learned: ${res.n_pairs} double blinks, watching ${which[res.signal] || 'your eyes'}`, 'ok', 6000);
+        return { mode: 'blink', fit: res };
+      }
+      this.say('I couldn’t see clear double blinks', h('div', {},
+        h('p', {}, res.error || ''),
+        h('p', {}, 'Blink twice (or click) to try again. Press Esc to keep the current settings.')));
+      await this.waitForDoubleBlinkOrClick();
+    }
+  }
+
+  // -- winks ---------------------------------------------------------------------------------
+  /** Close one eye, then the other: learns whether and how each eye winks. */
+  async runWinkTest() {
+    this.cancelled = false;
+    for (;;) {
+      const started = await this.tracker.request({ type: 'wink_calibration_start' }, 'wink_calibration_started');
+      if (!started.ok) throw new Error(started.error || 'Could not start the wink test');
+      this.placeDot(0.5, 0.5, { instant: true });
+      this.ui.dot.classList.add('settle');
+      this.say('Let’s see how you wink', 'Look at the dot. You’ll close one eye at a time and keep it closed until the ring is full. If you can’t, that’s fine — there are other ways.', { top: true });
+      await this.wait(3600);
+      const ring = h('div', { class: 'wink-ring', style: { left: '50%', top: '50%' } });
+      this.ui.ov.append(ring);
+      const steps = [
+        ['rest', 1800, 'Keep both eyes open'],
+        ['left', 2800, 'Close your LEFT eye', 'Keep your right eye open'],
+        ['rest', 1900, 'Open both eyes'],
+        ['right', 2800, 'Now close your RIGHT eye', 'Keep your left eye open'],
+        ['rest', 1600, 'Open both eyes'],
+      ];
+      try {
+        for (const [phase, ms, title, body] of steps) {
+          this.tracker.setGesturePhase(phase);
+          this.say(title, body || '', { top: true });
+          this.ui.dot.classList.toggle('wink-now', phase !== 'rest');
+          if (phase !== 'rest') sounds.point();
+          const t0 = performance.now();
+          while (performance.now() - t0 < ms) {
+            ring.style.setProperty('--p', phase === 'rest' ? '0' : String(Math.min(1, (performance.now() - t0) / ms)));
+            await this.wait(40);
+          }
+        }
+      } finally {
+        this.tracker.setGesturePhase(null);
+        ring.remove();
+      }
+      this.ui.dot.className = 'calib-dot done';
+      this.say('Checking…', h('div', { class: 'spinner' }));
+      const res = await this.tracker.request({ type: 'wink_calibration_finish' }, 'wink_calibration_result', 20000);
+      this.say('');
+      const choice = await this.showWinkResults(res);
+      if (choice === 'again') continue;
+      if (choice === 'long_close') {
+        await this.tracker.request({ type: 'gestures_set', gestures: { long_close: 'menu' } }, 'personal', 8000)
+          .catch(() => {});
+        toast('Close both eyes for about a second to open the menu (pick up, click, read aloud).', 'ok', 7000);
+      }
+      return { mode: 'wink', fit: res };
+    }
+  }
+
+  async showWinkResults(res) {
+    const ov = this.ui.ov;
+    const card = h('div', { class: 'overlay-card', style: { position: 'fixed', top: '5vh', left: '50%', translate: '-50% 0', width: 'min(1000px, 92vw)' } });
+    const eyes = h('div', { class: 'eye-results' });
+    let anyOk = false;
+    if (res.ok) {
+      for (const eye of ['left', 'right']) {
+        const r = res[eye] || {};
+        anyOk = anyOk || !!r.ok;
+        eyes.append(h('div', { class: `eye-result ${r.ok ? 'ok' : 'no'}` },
+          h('h3', { html: `${icon(r.ok ? 'check' : 'eye')}<span> ${eye === 'left' ? 'Left' : 'Right'} eye</span>` }),
+          h('p', {}, r.ok ? 'Winks work — hold it closed to drag, keep still for the menu.'
+            : `Not used for gestures: ${r.reason || 'no clear wink'}.`)));
+      }
+    }
+    card.append(h('div', { class: 'eyebrow' }, 'Wink test'),
+      h('h1', {}, res.ok ? (anyOk ? 'Your winks are set up' : 'Winking seems hard — no problem') : 'The wink test didn’t work'),
+      res.ok ? eyes : h('p', { class: 'muted' }, res.error || ''),
+      h('p', { class: 'muted' }, anyOk ? 'Try it on the Arrange page: look at a planet, close that eye, look at a slot, open it.'
+        : 'You can close both eyes for about a second instead, or rest your eyes on a button (dwell click in Settings).'));
+    ov.classList.remove('solid');
+    ov.append(card);
+    this.app.gaze.setSuspended(false);
+    const choices = [
+      { id: 'done', label: 'Done', icon: 'check', primary: anyOk },
+      { id: 'again', label: 'Try again', icon: 'refresh' },
+    ];
+    if (res.ok && !anyOk) choices.unshift({ id: 'long_close', label: 'Use “close both eyes”', sub: 'For about a second', icon: 'blink', primary: true });
+    const choice = await this.app.choose(ov, { choices, rowStyle: { paddingTop: '56vh' } });
+    card.remove();
+    this.app.gaze.setSuspended(true);
+    ov.classList.add('solid');
+    return choice;
   }
 
   // -- quick adjust ------------------------------------------------------------------------

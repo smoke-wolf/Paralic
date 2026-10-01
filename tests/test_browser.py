@@ -96,6 +96,7 @@ def page(browser, demo_server):
 
 def look_at(pg, selector, dx=0.0, dy=0.0):
     """Move the "gaze" (mouse) to an element, offset by a fraction of its size."""
+    pg.locator(selector).first.scroll_into_view_if_needed()
     box = pg.locator(selector).first.bounding_box()
     assert box, f"{selector} not visible"
     pg.mouse.move(box["x"] + box["width"] * (0.5 + dx), box["y"] + box["height"] * (0.5 + dy), steps=6)
@@ -206,6 +207,135 @@ def test_settings_change_by_gaze(page):
     stored = page.evaluate("JSON.parse(localStorage.getItem('paralic.settings.v1')).doubleBlink")
     assert stored == "relaxed"
     assert page.locator('.setting:has-text("Double-blink speed") .opt.selected').text_content() == "Relaxed"
+
+
+# -- eye gestures (demo mode: hold Q / E = keep the left / right eye closed) ------------------
+
+def center_of(pg, selector):
+    box = pg.locator(selector).first.bounding_box()
+    assert box, f"{selector} not visible"
+    return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+
+def test_hold_one_eye_closed_to_drag(page):
+    page.evaluate("location.hash = '#/arrange'")
+    page.wait_for_selector(".arrange-tray .arrange-card")
+    look_at(page, '.arrange-tray .arrange-card[data-planet="mercury"]')
+    page.keyboard.down("q")
+    page.wait_for_timeout(600)                     # held long enough: the press starts
+    assert page.evaluate("document.body.classList.contains('gaze-holding')")
+    x, y = center_of(page, '.arrange-slot[data-slot="0"]')
+    page.mouse.move(x, y, steps=12)                # look at the first place while holding
+    page.wait_for_timeout(400)
+    assert page.evaluate("document.body.classList.contains('gaze-dragging')")
+    assert page.locator(".drag-ghost").count() == 1
+    page.keyboard.up("q")                          # open the eye: drop
+    page.wait_for_timeout(400)
+    assert page.locator('.arrange-slot[data-slot="0"] .arrange-card[data-planet="mercury"]').count() == 1
+    assert page.locator(".drag-ghost").count() == 0
+    assert "1 of 8" in page.locator(".arrange-status").text_content()
+
+
+def test_short_hold_is_a_click_and_quick_wink_does_nothing_by_default(page):
+    look_at(page, 'a.nav-btn[data-route="read"]')
+    page.keyboard.down("e")
+    page.wait_for_timeout(200)                     # shorter than the hold time: a quick wink
+    page.keyboard.up("e")
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") in ("", "#/home")
+    page.keyboard.down("e")
+    page.wait_for_timeout(550)                     # a held wink, released without moving: click
+    page.keyboard.up("e")
+    page.wait_for_timeout(400)
+    assert page.evaluate("location.hash") == "#/read"
+
+
+def test_holding_still_opens_the_menu(page):
+    look_at(page, 'a.nav-btn[data-route="talk"]')
+    page.keyboard.down("q")
+    page.wait_for_timeout(1700)                    # hold time + long press
+    page.keyboard.up("q")
+    page.wait_for_selector(".gaze-menu")
+    items = page.locator(".gaze-menu-item").all_text_contents()
+    assert items[0] == "Click" and "Read aloud" in items and items[-1] == "Cancel"
+    look_at(page, '.gaze-menu-item[data-menu="click"]')
+    double_blink(page)
+    assert page.evaluate("location.hash") == "#/talk"
+    assert page.locator(".gaze-menu").count() == 0
+
+
+def test_draw_with_a_held_wink(page):
+    page.evaluate("location.hash = '#/draw'")
+    page.wait_for_selector(".draw-canvas")
+    x, y = center_of(page, ".draw-canvas")
+    page.mouse.move(x - 200, y, steps=4)
+    page.wait_for_timeout(200)
+    page.keyboard.down("e")
+    page.wait_for_timeout(600)
+    page.mouse.move(x + 200, y + 60, steps=15)
+    page.wait_for_timeout(200)
+    page.keyboard.up("e")
+    page.wait_for_timeout(200)
+    assert page.evaluate("document.querySelector('.draw-canvas').dataset.strokes") == "1"
+    # Pixels were painted along the path.
+    painted = page.evaluate("""() => {
+        const c = document.querySelector('.draw-canvas');
+        const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+        let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 0) n++;
+        return n; }""")
+    assert painted > 2000
+
+
+def test_dwell_click_when_enabled(page):
+    page.evaluate("""window.paralic.tracker.request({type: 'gestures_set', gestures: {dwell: true, dwell_ms: 700}},
+                                                  'personal')""")
+    page.wait_for_timeout(300)
+    look_at(page, 'a.nav-btn[data-route="explore"]')
+    page.wait_for_timeout(1100)
+    assert page.evaluate("location.hash") == "#/explore"
+    page.evaluate("window.paralic.tracker.request({type: 'gestures_set', gestures: {dwell: false}}, 'personal')")
+    page.wait_for_timeout(300)
+
+
+def test_long_close_menu_and_drag_lock(page):
+    page.evaluate("window.paralic.tracker.request({type: 'gestures_set', gestures: {long_close: 'menu'}}, 'personal')")
+    page.evaluate("location.hash = '#/arrange'")
+    page.wait_for_selector(".arrange-tray .arrange-card")
+    look_at(page, '.arrange-tray .arrange-card[data-planet="venus"]')
+    page.keyboard.down("b")                        # close both eyes for 1.2 s
+    page.wait_for_timeout(1200)
+    page.keyboard.up("b")
+    page.wait_for_selector(".gaze-menu")
+    look_at(page, '.gaze-menu-item[data-menu="move"]')
+    double_blink(page)                             # "Pick up to move"
+    page.wait_for_timeout(300)
+    assert page.locator(".drag-ghost").count() == 1
+    look_at(page, '.arrange-slot[data-slot="1"]')
+    double_blink(page)                             # drop it here
+    assert page.locator('.arrange-slot[data-slot="1"] .arrange-card[data-planet="venus"]').count() == 1
+    page.evaluate("window.paralic.tracker.request({type: 'gestures_set', gestures: {long_close: 'off'}}, 'personal')")
+    page.wait_for_timeout(300)
+
+
+def test_lab_shows_personalisation_and_runs_an_experiment(page):
+    page.evaluate("location.hash = '#/lab'")
+    page.wait_for_selector(".lab-grid")
+    assert "Tuned for" in page.locator("h1").first.text_content()
+    look_at(page, '.lab-experiment[href="#/lab/run/magnet"]')
+    double_blink(page)
+    page.wait_for_selector(".lab-arena .btn.primary")
+    look_at(page, ".lab-arena .btn.primary")
+    double_blink(page)
+    arms = []
+    for _ in range(12):                            # 3 variants x 4 targets
+        page.wait_for_selector(".lab-arena .target", timeout=4000)
+        arms.append(page.evaluate("JSON.stringify(window.paralic.gaze.magnetOverride)"))
+        look_at(page, ".lab-arena .target")
+        double_blink(page)
+    page.wait_for_selector(".lab-table", timeout=8000)
+    assert len(set(arms)) == 3                     # every variant was used, blind
+    assert page.locator(".lab-table tbody tr").count() == 3
+    assert page.evaluate("window.paralic.gaze.magnetOverride") is None
 
 
 @pytest.mark.slow

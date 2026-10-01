@@ -3,8 +3,12 @@
 
 import { $ } from './dom.js';
 
-/** Draw eye outlines and irises (normalised coordinates) on a canvas. */
-export function drawEyes(canvas, eyes, width, height) {
+/**
+ * Draw eye outlines and irises (normalised coordinates) on a canvas. An eye
+ * held closed in a wink (`winking`: "left" / "right", the person's own eye)
+ * is drawn in gold.
+ */
+export function drawEyes(canvas, eyes, width, height, winking = null) {
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -13,8 +17,8 @@ export function drawEyes(canvas, eyes, width, height) {
   ctx.clearRect(0, 0, width, height);
   if (!eyes) return;
   ctx.lineWidth = Math.max(2, width / 150);
-  ctx.strokeStyle = 'rgba(94, 234, 212, 0.95)';
-  for (const contour of [eyes.r, eyes.l]) {
+  for (const [eye, contour] of [['right', eyes.r], ['left', eyes.l]]) {
+    ctx.strokeStyle = eye === winking ? 'rgba(251, 191, 36, 1)' : 'rgba(94, 234, 212, 0.95)';
     ctx.beginPath();
     contour.forEach(([x, y], i) => (i ? ctx.lineTo(x * width, y * height) : ctx.moveTo(x * width, y * height)));
     ctx.closePath();
@@ -95,7 +99,7 @@ export class CameraPanel {
     const draw = (canvas, video) => {
       const w = video.videoWidth || 640;
       const hgt = video.videoHeight || 480;
-      drawEyes(canvas, m.face ? m.eyes : null, w, hgt);
+      drawEyes(canvas, m.face ? m.eyes : null, w, hgt, m.winking);
     };
     if (!this.panel.hidden) draw(this.canvas, this.video);
     for (const v of this.extraViews) draw(v.canvas, v.video);
