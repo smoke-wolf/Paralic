@@ -359,6 +359,16 @@ python tests/make_fake_video.py /tmp/face.y4m
 PARALIC_FAKE_VIDEO=/tmp/face.y4m python -m pytest --runslow tests/test_browser.py
 ```
 
+**Inspector.** `python -m paralic.inspector` replays the session recordings in `data/recordings/`
+([format](docs/recording-format.md)) in the browser at `http://localhost:8100`, frame by frame: the camera
+picture with the tracked points, the gaze on the screen, every signal over time, what the gaze networks computed
+(inputs, each layer of each ensemble member, the correction, the inputs that mattered most), the blink and wink
+detectors' states, the calibrations with their per-dot errors, and all events and setting changes. Options:
+`--data-dir` (Paralic's data folder, or any folder of recordings), `--port`, `--no-browser`, and a recording's
+folder name to open it directly. It needs no internet connection and only listens on this computer. To try it
+without a camera, `python tools/make_demo_recording.py` writes an eye-mode demo (the test portrait with simulated
+eyes) and a hand-mode demo, made by the real pipeline.
+
 The MediaPipe integration tests download a public-domain test portrait on first use and are skipped offline.
 
 `python tools/benchmark.py` runs the personalisation benchmark on simulated people (calibration labels for
