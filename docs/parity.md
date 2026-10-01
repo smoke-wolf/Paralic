@@ -89,6 +89,20 @@ web's). Each person's network is trained on its own platform's features, so this
     person's setup is `users/<id>/hand.json`. macOS has no hand mode yet (Vision's hand pose request would
     give the same 21 points).
 
+16. **Someone else in view** (`face_select.py`): FaceLandmarker reports up to 3 faces; the person being
+    followed keeps control (the face nearest its last box, within 1 face width per frame); when lost while others
+    are or were in view in the last 30 s, only their face print (score ≤ 4.5) or their place (within 1.5 face widths,
+    for 10 s) gives control back; otherwise nobody controls the cursor (the largest face after that, or 3 s later
+    when a face print recognises nobody). Hand mode follows the hand in control (palm-width continuity).
+17. **Glasses** (`glasses.py`): bridge and rim edges against the skin's own edges (glasses on above 2.1, off below
+    1.4, settled after 3 s), lens glare as the largest bright colourless blob over an eye (on above 0.5); glare on
+    one lens hands the cursor to the other eye's network (aligned like a wink); calibrations are kept per glasses
+    state (`profile.json` / `profile-glasses.json`).
+18. **Recordings and diagnosis** (`recorder.py`, `recording.py`, `inspector/`, `diagnose.py`): a session's
+    frames, events, landmarks, models and images in the documented format (`docs/recording-format.md`); the
+    diagnosis splits each accuracy check into the shared shift, the scatter between dots and the noise floor
+    (jitter / √frames per dot).
+
 ## Issues found in the macOS code
 
 * **`ABSelection.autoTrain` ignores each candidate's `hidden` size and `l2Grid`.** `GazeNet.train`
