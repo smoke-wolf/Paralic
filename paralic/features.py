@@ -22,18 +22,31 @@ import numpy as np
 
 from . import landmarks as L
 
+# Bump whenever the feature vector's layout or semantics change. It is stamped
+# into every saved calibration; a profile whose feature_version differs is not
+# used against the current features (the dimensions / meaning would not match) —
+# the person is routed to recalibrate instead. See paralic/calibration.py.
+FEATURE_VERSION = 2
+
 FEATURE_NAMES: tuple[str, ...] = (
+    # -- columns 0..19: the original contract, kept in place so index-based
+    #    consumers (the one-eye networks, outlier rejection) stay valid --------
     "r_dx", "r_dy", "l_dx", "l_dy",
     "r_open", "l_open",
     "bs_look_in_l", "bs_look_out_l", "bs_look_up_l", "bs_look_down_l",
     "bs_look_in_r", "bs_look_out_r", "bs_look_up_r", "bs_look_down_r",
     "yaw", "pitch", "roll",
     "tx", "ty", "tz",
+    # -- columns 20..27: richer full-mesh geometry + eye blendshapes -----------
+    "r_vlid", "l_vlid",        # iris height between the lids (0 top .. 1 bottom)
+    "r_tilt", "l_tilt",        # eye-axis angle (radians): per-eye roll signal
+    "bs_squint_r", "bs_squint_l",
+    "bs_wide_r", "bs_wide_l",
 )
 NUM_FEATURES = len(FEATURE_NAMES)
 
 # Indices into the feature vector that describe the eyes themselves (used for
-# outlier rejection during calibration).
+# outlier rejection during calibration): the four iris offsets.
 EYE_FEATURE_IDX: tuple[int, ...] = (0, 1, 2, 3)
 
 # Inputs of the one-eye ("monocular") gaze networks: that eye's features plus
@@ -42,8 +55,8 @@ EYE_FEATURE_IDX: tuple[int, ...] = (0, 1, 2, 3)
 # track reliably (a squint, a droopy lid, an eye patch).
 HEAD_FEATURE_IDX: tuple[int, ...] = (14, 15, 16, 17, 18, 19)
 EYE_INPUTS: dict[str, tuple[int, ...]] = {
-    "right": (0, 1, 4, 10, 11, 12, 13) + HEAD_FEATURE_IDX,
-    "left": (2, 3, 5, 6, 7, 8, 9) + HEAD_FEATURE_IDX,
+    "right": (0, 1, 4, 10, 11, 12, 13, 20, 22, 24, 26) + HEAD_FEATURE_IDX,
+    "left": (2, 3, 5, 6, 7, 8, 9, 21, 23, 25, 27) + HEAD_FEATURE_IDX,
 }
 
 # Typical noise / movement scale of each feature. Used as a lower bound for the
@@ -56,7 +69,10 @@ FEATURE_MIN_STD = np.array(
      0.03, 0.03, 0.03, 0.03,
      0.03, 0.03, 0.03, 0.03,
      0.035, 0.035, 0.035,   # ~2 degrees
-     1.0, 1.0, 1.5],        # centimetres
+     1.0, 1.0, 1.5,         # centimetres
+     0.02, 0.02,            # vlid (fraction of the fissure)
+     0.02, 0.02,            # tilt (radians)
+     0.03, 0.03, 0.03, 0.03],  # squint / wide blendshapes
     dtype=np.float64,
 )
 
@@ -64,6 +80,9 @@ _BLENDSHAPE_KEYS = (
     "eyeLookInLeft", "eyeLookOutLeft", "eyeLookUpLeft", "eyeLookDownLeft",
     "eyeLookInRight", "eyeLookOutRight", "eyeLookUpRight", "eyeLookDownRight",
 )
+# Extra eye blendshapes (subject's right, left): squint and wide-open, which help
+# separate looking-down from blinking and sharpen the vertical gaze estimate.
+_EXTRA_BS_KEYS = ("eyeSquintRight", "eyeSquintLeft", "eyeWideRight", "eyeWideLeft")
 
 
 @dataclass
@@ -77,6 +96,8 @@ class EyeMeasure:
     dx: float               # iris offset along the eye axis, in eye widths
     dy: float               # iris offset perpendicular to the eye axis (down = +)
     aperture: float         # lid opening, in eye widths
+    vlid: float = 0.5       # iris height between the lids: 0 at upper lid, 1 at lower
+    tilt: float = 0.0       # eye-axis angle in radians (per-eye roll signal)
 
 
 @dataclass
@@ -114,10 +135,19 @@ def _eye_measure(pts: np.ndarray, corner_a: int, corner_b: int,
     dy = float(rel @ ey) / width
     up = pts[list(upper)].mean(axis=0)
     lo = pts[list(lower)].mean(axis=0)
-    aperture = float((lo - up) @ ey) / width
+    u_proj = float((up - center) @ ey)
+    l_proj = float((lo - center) @ ey)
+    aperture = (l_proj - u_proj) / width
+    # Where the iris sits vertically between the lids (0 = touching the upper
+    # lid, 1 = the lower): a direct vertical-gaze signal, robust to how open the
+    # eye is. Falls back to the midpoint for a (near-)closed eye.
+    span = l_proj - u_proj
+    iris_proj = float((iris_c - center) @ ey)
+    vlid = float((iris_proj - u_proj) / span) if abs(span) > 1e-6 else 0.5
+    tilt = float(math.atan2(ex[1], ex[0]))
     radius = float(np.mean(np.hypot(*(iris_pts[1:] - iris_c).T)))
     return EyeMeasure(center=center, iris=iris_c, iris_radius=radius, width=width,
-                      dx=dx, dy=dy, aperture=aperture)
+                      dx=dx, dy=dy, aperture=aperture, vlid=vlid, tilt=tilt)
 
 
 def head_pose_from_matrix(matrix: Optional[np.ndarray]) -> tuple[float, float, float, np.ndarray]:
@@ -159,6 +189,7 @@ def extract_features(
 
     bs = dict(blendshapes or {})
     looks = [float(bs.get(k, 0.0)) for k in _BLENDSHAPE_KEYS]
+    squint_r, squint_l, wide_r, wide_l = (float(bs.get(k, 0.0)) for k in _EXTRA_BS_KEYS)
 
     yaw, pitch, roll, t = head_pose_from_matrix(matrix)
 
@@ -167,7 +198,10 @@ def extract_features(
          right.aperture, left.aperture,
          *looks,
          yaw, pitch, roll,
-         t[0], t[1], t[2]],
+         t[0], t[1], t[2],
+         right.vlid, left.vlid,
+         right.tilt, left.tilt,
+         squint_r, squint_l, wide_r, wide_l],
         dtype=np.float64,
     )
 
@@ -222,4 +256,24 @@ def overlay_points(points_px: np.ndarray, image_size: tuple[int, int], feats: Fr
         "ri": iris(feats.right_eye),
         "li": iris(feats.left_eye),
         "box": [round(v, 4) for v in feats.face_box],
+    }
+
+
+def mesh_overlay(points_px: np.ndarray, image_size: tuple[int, int]) -> dict:
+    """The full 478-point face mesh, normalised, for the calibration preview.
+
+    Returns every landmark as a normalised ``[x, y]`` point (the dot cloud that
+    reads as a "face mask"), plus ``lines``: index loops the browser connects
+    into a light wireframe (face oval, lips, eyes, brows, nose bridge). Streamed
+    only while calibrating (gated by the ``mesh`` header flag) to keep bandwidth
+    sane.
+    """
+    w, h = image_size
+    pts = np.asarray(points_px[:, :2], dtype=np.float64)
+    n = min(len(pts), L.NUM_LANDMARKS_WITH_IRIS)
+    out_pts = [[round(float(pts[i, 0] / w), 3), round(float(pts[i, 1] / h), 3)] for i in range(n)]
+    return {
+        "pts": out_pts,
+        "lines": [list(group) for group in L.MESH_OUTLINES],
+        "iris": [list(L.RIGHT_IRIS), list(L.LEFT_IRIS)],
     }

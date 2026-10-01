@@ -60,6 +60,7 @@ def patch_session(monkeypatch):
     monkeypatch.setattr(session_mod, "extract_features", lambda pts, size, bs=None, m=None: pts)
     monkeypatch.setattr(session_mod, "overlay_points", lambda pts, size, feats: {"r": [], "l": [], "ri": [0, 0, 0],
                                                                                  "li": [0, 0, 0], "box": [0, 0, 1, 1]})
+    monkeypatch.setattr(session_mod, "mesh_overlay", lambda pts, size: {"pts": [[0.5, 0.5]], "lines": [], "iris": []})
 
 
 class ManualClock:

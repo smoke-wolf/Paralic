@@ -124,6 +124,7 @@ export class EyeTracker extends Channel {
     this.label = null;
     this.gesture = null;
     this.overlay = false;
+    this.mesh = false;      // stream the full face mesh (calibration preview only)
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { alpha: false });
     this.simulated = false;
@@ -225,6 +226,7 @@ export class EyeTracker extends Channel {
     if (this.label) header.label = this.label;
     if (this.gesture) header.gesture = this.gesture;
     if (this.overlay) header.overlay = true;
+    if (this.mesh) header.mesh = true;
     this.canvas.toBlob((blob) => {
       if (!blob || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
         if (this.inFlight === id) this.inFlight = null;

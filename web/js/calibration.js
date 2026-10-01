@@ -10,8 +10,10 @@
 //   5. blink twice three times when the dot turns purple: learns how you
 //      blink (thresholds, timing, and which eye signal to watch).
 //
-// Quick adjust (about 8 seconds): 5 dots that correct a saved calibration for
-// today's seating position.
+// Quick tune-up (about 20 seconds): a dot glides along a smooth path while you
+// follow it with your eyes and keep the mouse pointer where you are looking; the
+// live mouse position labels every frame, and the dense data fits the affine
+// correction for today's seating position.
 //
 // Blink test / wink test: the blink step on its own, and "close your left
 // eye, now your right eye" to learn how (and whether) each eye winks.
@@ -20,12 +22,17 @@ import { h, sleep, toast } from './dom.js';
 import { icon } from './icons.js';
 import { clientToScreen, screenToClient } from './screen-space.js';
 import { sounds } from './sound.js';
+import { speak, canSpeak } from './speech.js';
+import { drawMesh } from './camera-panel.js';
 
 class Cancelled extends Error {}
 
+// A denser 5x4 grid (plus the centre) than the old 13 dots: more positions make
+// the gaze network interpolate better across the whole screen. Snake-ordered so
+// the dot only ever makes short hops.
 function gridPoints() {
-  const xs = [0.06, 0.35, 0.65, 0.94];
-  const ys = [0.08, 0.5, 0.92];
+  const xs = [0.06, 0.28, 0.5, 0.72, 0.94];
+  const ys = [0.08, 0.37, 0.63, 0.92];
   const pts = [];
   ys.forEach((y, row) => {
     const rowXs = row % 2 === 0 ? xs : [...xs].reverse(); // snake order: short hops
@@ -38,13 +45,19 @@ function gridPoints() {
 const FULL_POINTS = gridPoints();
 const VALIDATION_POINTS = [[0.27, 0.28], [0.73, 0.28], [0.5, 0.55], [0.73, 0.8], [0.27, 0.8]];
 const ADJUST_POINTS = [[0.5, 0.5], [0.12, 0.14], [0.88, 0.14], [0.88, 0.86], [0.12, 0.86]];
+// Explicit face tilt / rotation sub-steps. Keeping the eyes on the centre dot
+// while the head moves teaches the network to compensate for head pose: yaw
+// (turn), pitch (nod) and roll (tilt). Each is held long enough to gather
+// frames across the movement. [text, hold ms].
 const HEAD_STEPS = [
-  'Keep your eyes on the dot…',
-  'Slowly turn your head a little to the left',
-  '…and a little to the right',
-  'Now tilt your head slightly up',
-  '…and slightly down',
-  'Back to the middle. Great!',
+  ['Keep your eyes on the dot, and keep them there the whole time.', 2000],
+  ['Slowly turn your head to the left — eyes still on the dot.', 2600],
+  ['And slowly turn your head to the right.', 2600],
+  ['Back to centre. Now slowly tip your head up, like a small nod up.', 2600],
+  ['And slowly tip your head down.', 2600],
+  ['Back to centre. Now tilt your head towards your left shoulder.', 2600],
+  ['And tilt towards your right shoulder.', 2600],
+  ['Lovely — back to the middle. Keep looking at the dot.', 2000],
 ];
 
 export function rateAccuracy(errorPx) {
@@ -77,6 +90,7 @@ export class Calibrator {
     this.app.gaze.setSuspended(true);
     const ov = this.app.openOverlay('calib solid');
     this.ui = this.buildUI(ov);
+    this.startMeshPreview();
     try {
       if (mode === 'adjust') return await this.runAdjust();
       if (mode === 'blink') return await this.runBlinkTest();
@@ -89,6 +103,7 @@ export class Calibrator {
       }
       throw err;
     } finally {
+      this.stopMeshPreview();
       this.tracker.setLabel(null);
       this.tracker.setGesturePhase(null);
       this.running = false;
@@ -102,8 +117,49 @@ export class Calibrator {
     const text = h('div', { class: 'calib-text' });
     const warning = h('div', { class: 'calib-warning', hidden: true });
     const progress = h('div', { class: 'calib-progress' });
-    ov.append(dot, text, warning, progress);
-    return { ov, dot, text, warning, progress };
+    // Live camera preview with the full face mesh drawn on top, shown for the
+    // whole calibration so the user can see their face and that tracking works.
+    const video = h('video', { class: 'calib-cam-video', autoplay: true, muted: true, playsinline: true });
+    const meshCanvas = h('canvas', { class: 'calib-cam-mesh' });
+    const camLabel = h('div', { class: 'calib-cam-label' }, 'Your face');
+    const cam = h('div', { class: 'calib-cam' }, video, meshCanvas, camLabel);
+    // A ring that fills as good frames are gathered for the current step.
+    const ring = h('div', { class: 'calib-ring', hidden: true },
+      h('svg', { viewBox: '0 0 48 48', html:
+        '<circle class="track" cx="24" cy="24" r="21"></circle>' +
+        '<circle class="fill" cx="24" cy="24" r="21"></circle>' }));
+    // Visible transcript of the spoken guidance (accessibility; also helps when
+    // speech is off or unsupported). Lives at the bottom, out of the way.
+    const transcript = h('div', { class: 'calib-transcript', 'aria-live': 'polite' });
+    ov.append(dot, text, warning, progress, cam, ring, transcript);
+    return { ov, dot, text, warning, progress, transcript, cam, video, meshCanvas, ring };
+  }
+
+  /** Show the camera + live face mesh for the whole calibration. */
+  startMeshPreview() {
+    const t = this.tracker;
+    if (t.simulated || !this.ui) { if (this.ui?.cam) this.ui.cam.hidden = true; return; }
+    this._prevOverlay = t.overlay;
+    t.overlay = true;    // make the server compute overlay/landmarks
+    t.mesh = true;       // ask it to stream the full 478-point mesh
+    try {
+      if (t.stream) { this.ui.video.srcObject = t.stream; this.ui.video.play?.().catch(() => {}); }
+    } catch { /* preview is best-effort */ }
+    this._meshOff = t.on('frame', (m) => {
+      if (!this.ui) return;
+      const w = this.ui.video.videoWidth || 320;
+      const hgt = this.ui.video.videoHeight || 240;
+      drawMesh(this.ui.meshCanvas, m.face ? m.mesh : null, w, hgt);
+      this.ui.cam.classList.toggle('no-face', !m.face);
+    });
+  }
+
+  stopMeshPreview() {
+    if (this._meshOff) { this._meshOff(); this._meshOff = null; }
+    const t = this.tracker;
+    t.mesh = false;
+    if (this._prevOverlay !== undefined) t.overlay = this._prevOverlay;
+    try { if (this.ui?.video) this.ui.video.srcObject = null; } catch { /* ignore */ }
   }
 
   checkCancel() {
@@ -118,13 +174,33 @@ export class Calibrator {
     }
   }
 
-  say(title, body = '', { top = false } = {}) {
+  say(title, body = '', { top = false, voice = true } = {}) {
     const { text } = this.ui;
     text.classList.toggle('top', top);
     text.innerHTML = '';
     if (title) text.append(h('h2', {}, title));
     if (body) text.append(typeof body === 'string' ? h('p', {}, body) : body);
     text.style.opacity = title || body ? '1' : '0';
+    // Read the instruction aloud (accessibility), synced with the on-screen
+    // text and the visible transcript. Only speak real instructions, never the
+    // spinner/animation bodies, and never the same line twice in a row.
+    if (voice) this.announce(title, typeof body === 'string' ? body : '');
+  }
+
+  announce(title, body = '') {
+    const line = [title, body].filter(Boolean).join('. ').trim();
+    if (!line || line === this._lastSpoken) return;
+    this._lastSpoken = line;
+    this.transcribe(line);
+    if (canSpeak()) speak(line);
+  }
+
+  /** Keep a small visible transcript of what was spoken, for anyone who can't
+   *  hear it or has speech turned off. */
+  transcribe(line) {
+    const t = this.ui.transcript;
+    if (!t) return;
+    t.textContent = line;
   }
 
   setProgress(total, done) {
@@ -160,13 +236,16 @@ export class Calibrator {
     n.remove();
   }
 
-  /** Label frames with the dot position until enough good frames arrived. */
-  async collect(kind, point, x, y, { minFrames = 16, minMs = 550, maxMs = 2600 } = {}) {
+  /** Label frames with the dot position until enough good frames arrived.
+   *  ``onProgress(count, minFrames)`` is called as frames are gathered (used to
+   *  fill the progress ring during the head-pose steps). */
+  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = 3000, onProgress = null } = {}) {
     let count = 0;
     let missing = 0;
     const off = this.tracker.on('frame', (m) => {
       if (m.labeled) count++;
       missing = m.face ? 0 : missing + 1;
+      if (onProgress) onProgress(count, minFrames);
     });
     const s = clientToScreen(x, y);
     this.tracker.setLabel({ x: s.x, y: s.y, kind, pt: point });
@@ -185,6 +264,31 @@ export class Calibrator {
     return count;
   }
 
+  /** Show/fill/hide the circular progress ring (0..1). */
+  setRing(fraction) {
+    const ring = this.ui.ring;
+    if (!ring) return;
+    if (fraction == null) { ring.hidden = true; return; }
+    ring.hidden = false;
+    const fill = ring.querySelector('.fill');
+    const C = 2 * Math.PI * 21;    // circumference for r=21
+    const f = Math.max(0, Math.min(1, fraction));
+    fill.style.strokeDasharray = `${C}`;
+    fill.style.strokeDashoffset = `${C * (1 - f)}`;
+    ring.classList.toggle('full', f >= 1);
+  }
+
+  /** A slow, visible countdown ("Hold it… 3, 2, 1") with spoken sync. */
+  async holdCountdown(seconds = 3) {
+    const n = h('div', { class: 'calib-count' });
+    this.ui.text.append(n);
+    for (let k = seconds; k >= 1; k--) {
+      n.textContent = String(k);
+      await this.wait(1000);
+    }
+    n.remove();
+  }
+
   warn(message) {
     const { warning } = this.ui;
     warning.hidden = !message;
@@ -196,9 +300,9 @@ export class Calibrator {
     for (let i = 0; i < points.length; i++) {
       const [fx, fy] = points[i];
       const { x, y } = this.placeDot(fx, fy, { instant: i === 0 });
-      await this.wait(i === 0 ? 400 : 620);
+      await this.wait(i === 0 ? 650 : 820);
       this.ui.dot.classList.add('settle');
-      await this.wait(opts.settleMs ?? 380);
+      await this.wait(opts.settleMs ?? 520);
       this.ui.dot.classList.add('collect');
       let n = await this.collect(kind, i, x, y, opts);
       if (n < 5) n = await this.collect(kind, i, x, y, { ...opts, maxMs: 3000 }); // one retry
@@ -218,24 +322,52 @@ export class Calibrator {
     this.say('');
     await this.showPoints(FULL_POINTS, 'cal');
 
-    // Head-movement phase.
+    // Head-movement phase — deliberately slow. Each pose is held until enough
+    // good frames are actually gathered (a filling ring shows the progress), so
+    // the step never races ahead before the data is in. Short countdowns and
+    // pauses sit between steps, with the instructions spoken in sync.
     const c = this.placeDot(0.5, 0.5);
     const guide = h('div', { class: 'head-guide', style: { left: `${c.x}px`, top: `${c.y}px` } });
     this.ui.ov.append(guide);
     this.ui.dot.classList.add('settle');
-    this.setProgress(0, 0);
-    this.say('Now keep looking at the dot', 'and gently move your head. If moving is hard for you, just keep looking.', { top: true });
-    await this.wait(1600);
-    this.ui.dot.classList.add('collect');
+    this.setProgress(HEAD_STEPS.length, 0);
+    this.say('Now the head movements', 'Keep your eyes on the dot the whole time, and move slowly. If moving is hard, just keep looking — that is fine.', { top: true });
+    await this.wait(3200);
     const s = clientToScreen(c.x, c.y);
-    this.tracker.setLabel({ x: s.x, y: s.y, kind: 'head', pt: 0 });
     try {
-      for (const step of HEAD_STEPS) {
+      for (let i = 0; i < HEAD_STEPS.length; i++) {
+        const [step] = HEAD_STEPS[i];
+        this.ui.dot.classList.remove('collect');
+        // Announce the move and give the person a moment to get there.
         this.say(step, '', { top: true });
-        await this.wait(1050);
+        await this.wait(1500);
+        this.say(step, 'Hold it there…', { top: true, voice: false });
+        await this.holdCountdown(2);
+        // Now gather frames for this pose, gated on a real frame count.
+        this.ui.dot.classList.add('collect');
+        this.setRing(0);
+        const got = await this.collect('head', i, c.x, c.y,
+          { minFrames: 26, minMs: 1500, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
+        if (got < 8) {   // face was lost — give it one more, calmer try
+          this.warn(null);
+          this.say(step, 'Let’s try that one again — hold still.', { top: true });
+          await this.wait(900);
+          this.setRing(0);
+          await this.collect('head', i, c.x, c.y,
+            { minFrames: 20, minMs: 1200, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
+        }
+        this.setRing(1);
+        sounds.point();
+        this.setProgress(HEAD_STEPS.length, i + 1);
+        this.setRing(null);
+        // A brief rest before the next move.
+        this.ui.dot.classList.remove('collect');
+        this.say(step, 'Good.', { top: true, voice: false });
+        await this.wait(700);
       }
     } finally {
       this.tracker.setLabel(null);
+      this.setRing(null);
       guide.remove();
     }
 
@@ -510,24 +642,131 @@ export class Calibrator {
     return choice;
   }
 
-  // -- quick adjust ------------------------------------------------------------------------
+  // -- quick adjust: continuous, mouse-labelled pursuit ------------------------------------
+  //
+  // A dot glides slowly along a procedural path covering the whole screen while
+  // the user follows it with their eyes AND keeps the mouse pointer where they
+  // are looking. The MOUSE position is the ground-truth label (more honest than
+  // assuming perfect dot-following): every frame, if the pointer is near the dot
+  // and moving slowly (so the user is really tracking), we label the frame with
+  // the live mouse position. The dense (eye-features -> mouse-position) pairs fit
+  // the affine correction — quick and stable, and it cannot destabilise the net.
   async runAdjust() {
     this.cancelled = false;
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'adjust' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start adjustment');
-    this.say('Quick adjustment', 'Look at each dot as it appears.');
-    await this.wait(1600);
-    this.say('');
-    await this.showPoints(ADJUST_POINTS, 'adjust', { minFrames: 14 });
-    this.say('Adjusting…', h('div', { class: 'spinner' }));
+
+    this.say('Quick tune-up',
+      'Follow the dot with your eyes — and move the mouse so the pointer stays where you are looking.', { top: true });
+    await this.wait(4200);
+
+    let path = null;
+    try { path = await this.fetchTrail('lissajous'); } catch { /* fall back below */ }
+    if (!path || path.length < 2) {
+      // The trail API was unavailable: fall back to the old 5-dot adjust.
+      this.say('');
+      await this.showPoints(ADJUST_POINTS, 'adjust', { minFrames: 14 });
+      return this.finishAdjust();
+    }
+
+    // Show the live gaze estimate (so the user sees tracker vs. truth).
+    const gazeMark = h('div', { class: 'calib-gaze-mark', hidden: true });
+    this.ui.ov.append(gazeMark);
+    const offFrame = this.tracker.on('frame', (m) => {
+      const g = (m.face && m.gaze) ? screenToClient(m.gaze[0], m.gaze[1]) : null;
+      gazeMark.hidden = !g;
+      if (g) gazeMark.style.translate = `${g.x}px ${g.y}px`;
+    });
+
+    // Track the mouse (the ground-truth label) and its speed.
+    let mx = window.innerWidth / 2, my = window.innerHeight / 2, mt = performance.now();
+    let mvx = 0, mvy = 0;
+    const onMove = (e) => {
+      const now = performance.now();
+      const dt = Math.max(1e-3, (now - mt) / 1000);
+      mvx = (e.clientX - mx) / dt; mvy = (e.clientY - my) / dt;
+      mx = e.clientX; my = e.clientY; mt = now;
+    };
+    window.addEventListener('mousemove', onMove);
+
+    this.say('Follow the dot', 'Keep the mouse pointer where you are looking.', { top: true });
+    const DURATION = 20000;
+    const diag = Math.hypot(window.innerWidth, window.innerHeight);
+    const nearR = 0.17 * diag;        // pointer must be near the dot (really tracking)
+    const maxSpeed = 2.2 * diag;      // px/s: skip flung/!tracking frames
+    let collected = 0;
+    const start = performance.now();
+    try {
+      for (;;) {
+        this.checkCancel();
+        const now = performance.now();
+        const u = (now - start) / DURATION;
+        if (u >= 1) break;
+        const [fx, fy] = this.sampleTrail(path, u);
+        const dx = fx * window.innerWidth, dy = fy * window.innerHeight;
+        this.ui.dot.className = 'calib-dot collect';
+        this.ui.dot.style.translate = `${dx}px ${dy}px`;
+        this.setRing(u);
+        // Guards: pointer near the dot and moving slowly, else don't collect.
+        const nearDot = Math.hypot(mx - dx, my - dy) < nearR;
+        const slow = Math.hypot(mvx, mvy) < maxSpeed;
+        if (nearDot && slow) {
+          const s = clientToScreen(mx, my);
+          this.tracker.setLabel({ x: s.x, y: s.y, kind: 'adjust', pt: Math.floor((now - start) / 300) });
+          collected++;
+          this.warn(null);
+        } else {
+          this.tracker.setLabel(null);
+          this.warn(nearDot ? null : 'Keep the mouse pointer on the dot');
+        }
+        await this.raf();
+      }
+    } finally {
+      this.tracker.setLabel(null);
+      this.setRing(null);
+      window.removeEventListener('mousemove', onMove);
+      offFrame();
+      gazeMark.remove();
+    }
+
+    if (collected < 20) {
+      toast('I didn’t get enough tracking — try again and keep the pointer on the dot.', 'warn', 6000);
+      return { mode: 'adjust', fit: { ok: false, error: 'not enough data' } };
+    }
+    return this.finishAdjust();
+  }
+
+  async finishAdjust() {
+    this.say('Tuning…', h('div', { class: 'spinner' }));
     const res = await this.tracker.request({ type: 'calibration_fit', mode: 'adjust' }, 'calibration_result', 30000);
     this.app.gaze.resetBias();
     if (res.ok) {
-      toast(`Adjusted — error ${Math.round(res.error_before_px)} → ${Math.round(res.error_after_px)} px`, 'ok');
+      const show = (px) => `${Math.round(px)} px (≈${(px / 37.8).toFixed(1)} cm)`;
+      toast(`Tuned — error ${show(res.error_before_px)} → ${show(res.error_after_px)}`, 'ok', 6000);
       sounds.success();
     } else {
-      toast(res.error || 'Adjustment failed', 'warn');
+      toast(res.error || 'Tune-up failed', 'warn');
     }
     return { mode: 'adjust', fit: res };
   }
+
+  // Fetch a procedural pursuit path (normalised points) from the server.
+  async fetchTrail(kind) {
+    const res = await fetch(`/api/trail/${kind}?n=400&seed=${Date.now() % 997}`);
+    if (!res.ok) throw new Error('trail unavailable');
+    const data = await res.json();
+    return (data.points || []).map((p) => [p.x, p.y]);
+  }
+
+  // Position along the polyline at u in [0, 1] (linear between waypoints).
+  sampleTrail(points, u) {
+    const f = Math.max(0, Math.min(1, u)) * (points.length - 1);
+    const i = Math.floor(f);
+    const t = f - i;
+    const a = points[i];
+    const b = points[Math.min(points.length - 1, i + 1)];
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+  }
+
+  raf() { return new Promise((r) => requestAnimationFrame(() => r())); }
 }

@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from paralic import landmarks as L
-from paralic.features import NUM_FEATURES, extract_features, head_pose_from_matrix, overlay_points
+from paralic.features import (FEATURE_NAMES, FEATURE_VERSION, NUM_FEATURES, extract_features,
+                             head_pose_from_matrix, mesh_overlay, overlay_points)
 
 
 def synthetic_face(iris_shift=(0.0, 0.0), aperture=10.0):
@@ -40,6 +41,32 @@ def test_iris_offsets_follow_iris():
     assert abs(centred.right_eye.dx) < 1e-9 and abs(centred.left_eye.dx) < 1e-9
     assert right.right_eye.dx == pytest.approx(0.1) and right.left_eye.dx == pytest.approx(0.1)
     assert down.right_eye.dy == pytest.approx(0.05)
+
+
+def test_feature_vector_is_the_full_mesh_set():
+    # The enriched contract: 28 features, version 2, with the new mesh signals.
+    assert NUM_FEATURES == 28 and FEATURE_VERSION == 2
+    for name in ("r_vlid", "l_vlid", "r_tilt", "l_tilt", "bs_squint_r", "bs_wide_l"):
+        assert name in FEATURE_NAMES
+    v = extract_features(synthetic_face(), (640, 480)).vector
+    assert v.shape == (NUM_FEATURES,)
+
+
+def test_vertical_iris_and_eye_tilt():
+    centred = extract_features(synthetic_face(), (640, 480))
+    down = extract_features(synthetic_face((0.0, 0.08)), (640, 480))
+    # A centred iris sits mid-way between the lids; looking down lowers it.
+    assert centred.right_eye.vlid == pytest.approx(0.5, abs=0.05)
+    assert down.right_eye.vlid > centred.right_eye.vlid + 0.1
+    # The synthetic eyes are horizontal, so the tilt signal is ~0.
+    assert abs(centred.right_eye.tilt) < 1e-6 and abs(centred.left_eye.tilt) < 1e-6
+
+
+def test_extra_eye_blendshapes_enter_the_vector():
+    bs = {"eyeSquintRight": 0.7, "eyeWideLeft": 0.6}
+    v = extract_features(synthetic_face(), (640, 480), bs).vector
+    assert v[FEATURE_NAMES.index("bs_squint_r")] == pytest.approx(0.7)
+    assert v[FEATURE_NAMES.index("bs_wide_l")] == pytest.approx(0.6)
 
 
 def test_closure_rises_when_lids_close():
@@ -79,3 +106,17 @@ def test_overlay_points_are_normalised():
 def test_requires_iris_landmarks():
     with pytest.raises(ValueError):
         extract_features(np.zeros((468, 3)), (640, 480))
+
+
+def test_mesh_overlay_is_the_full_mask():
+    pts = synthetic_face()
+    mesh = mesh_overlay(pts, (640, 480))
+    # Every one of the 478 landmarks, normalised into the frame.
+    assert len(mesh["pts"]) == L.NUM_LANDMARKS_WITH_IRIS
+    assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in mesh["pts"])
+    # Wireframe loops reference valid landmark indices.
+    assert len(mesh["lines"]) >= 4
+    for line in mesh["lines"]:
+        assert len(line) >= 3
+        assert all(0 <= i < L.NUM_LANDMARKS_WITH_IRIS for i in line)
+    assert len(mesh["iris"]) == 2

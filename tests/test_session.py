@@ -19,7 +19,8 @@ def env(monkeypatch, tmp_path):
     user = VirtualUser(seed=5, noise=0.5)
     state = {"id": 0}
 
-    def frame(sx=None, sy=None, label=None, closure=0.12, face=True, overlay=False, closed=None, gesture=None):
+    def frame(sx=None, sy=None, label=None, closure=0.12, face=True, overlay=False, closed=None, gesture=None,
+              mesh=False):
         """One camera frame; ``closed`` = "left" / "right" closes that eye (a wink)."""
         state["id"] += 1
         if face:
@@ -38,6 +39,8 @@ def env(monkeypatch, tmp_path):
             header["label"] = label
         if overlay:
             header["overlay"] = True
+        if mesh:
+            header["mesh"] = True
         if gesture:
             header["gesture"] = gesture
         out = session.handle_frame(pack_frame(header, JPEG))
@@ -65,6 +68,14 @@ def test_bad_frame_is_reported(env):
     session, *_ = env
     out = session.handle_frame(b"\x01")
     assert out[0]["type"] == "frame" and "error" in out[0]
+
+
+def test_mesh_is_streamed_only_when_requested(env):
+    _, _, _, frame, _ = env
+    # No mesh unless the calibration preview asks for it (bandwidth gate).
+    assert "mesh" not in frame()[0]
+    msg = frame(mesh=True)[0]
+    assert "mesh" in msg and "pts" in msg["mesh"]
 
 
 def test_no_face_frame(env):

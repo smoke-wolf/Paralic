@@ -31,10 +31,12 @@ from typing import Iterable, Optional
 
 import numpy as np
 
-from .features import EYE_FEATURE_IDX, EYE_INPUTS, FEATURE_MIN_STD, FEATURE_NAMES, NUM_FEATURES
+from .features import (EYE_FEATURE_IDX, EYE_INPUTS, FEATURE_MIN_STD, FEATURE_NAMES, FEATURE_VERSION,
+                       NUM_FEATURES)
 from .gazenet import AffineCorrection, GazeNet, ModelConfig
 
-PROFILE_VERSION = 1
+# Bumped to 2 with the full-mesh feature set (see features.FEATURE_VERSION).
+PROFILE_VERSION = 2
 KINDS = ("cal", "head", "val", "adjust", "ft")
 TRAIN_KINDS = ("cal", "head", "val", "adjust", "ft")
 # Kinds whose samples may be held out in cross-validation (not the head-motion ones).
@@ -354,8 +356,10 @@ class ProfileStore:
 
     def save(self, model: GazeNet, data: CalibrationData, screen: Optional[dict], accuracy_px: Optional[float]) -> None:
         frames = data.of_kind(*TRAIN_KINDS)
+        model.meta["feature_version"] = FEATURE_VERSION
         doc = {
             "version": PROFILE_VERSION,
+            "feature_version": FEATURE_VERSION,
             "created": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "screen": screen,
             "accuracy_px": accuracy_px,
@@ -393,8 +397,15 @@ class ProfileStore:
 
     def load(self) -> tuple[GazeNet, CalibrationData, dict]:
         doc = self._read()
-        if doc.get("version") != PROFILE_VERSION or doc.get("feature_names") != list(FEATURE_NAMES):
-            raise ValueError("Saved calibration was made by an incompatible version")
+        # A profile is only usable if it was made with this exact feature set:
+        # the gaze network's inputs (count, order and meaning) must match, or it
+        # would silently mispredict. A mismatch is not an error to the user —
+        # they are simply asked to recalibrate (see session._cmd_profile_load,
+        # which turns this into loaded=False and the UI offers calibration).
+        if (doc.get("version") != PROFILE_VERSION
+                or doc.get("feature_version") != FEATURE_VERSION
+                or doc.get("feature_names") != list(FEATURE_NAMES)):
+            raise ValueError("This calibration was made with an older face model — please recalibrate.")
         model = GazeNet.from_dict(doc["model"])
         data = CalibrationData()
         d = doc.get("data", {})

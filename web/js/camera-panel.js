@@ -39,6 +39,57 @@ export function drawEyes(canvas, eyes, width, height, winking = null) {
   }
 }
 
+/**
+ * Draw the full 478-point face mesh (the "face mask") on a canvas: a dot cloud
+ * of every landmark plus a light wireframe of the outline loops the server
+ * sends (face oval, lips, eyes, brows, nose). `mesh` is the payload from
+ * features.mesh_overlay: { pts: [[x,y]…], lines: [[idx…]…], iris: [[idx…]…] }.
+ */
+export function drawMesh(canvas, mesh, width, height) {
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, width, height);
+  if (!mesh || !mesh.pts) return;
+  const pts = mesh.pts;
+  // Light wireframe first, so the dots sit on top.
+  ctx.lineWidth = Math.max(1, width / 480);
+  ctx.strokeStyle = 'rgba(94, 234, 212, 0.55)';
+  for (const line of mesh.lines || []) {
+    ctx.beginPath();
+    line.forEach((idx, i) => {
+      const p = pts[idx];
+      if (!p) return;
+      const x = p[0] * width;
+      const y = p[1] * height;
+      i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+  }
+  // The dot cloud.
+  ctx.fillStyle = 'rgba(167, 139, 250, 0.75)';
+  const r = Math.max(0.8, width / 420);
+  for (const [x, y] of pts) {
+    ctx.beginPath();
+    ctx.arc(x * width, y * height, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  // Irises brighter.
+  ctx.fillStyle = 'rgba(251, 191, 36, 0.95)';
+  for (const group of mesh.iris || []) {
+    for (const idx of group) {
+      const p = pts[idx];
+      if (!p) continue;
+      ctx.beginPath();
+      ctx.arc(p[0] * width, p[1] * height, r * 1.6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+}
+
 export class CameraPanel {
   constructor(tracker) {
     this.tracker = tracker;

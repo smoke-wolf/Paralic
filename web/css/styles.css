@@ -1041,3 +1041,65 @@ body.gaze-dragging [data-dropzone].drop-hover,
 .lab-table th { color: var(--muted); font-weight: 600; }
 .opt.swatch::before { content: ""; display: inline-block; width: 18px; height: 18px; margin-right: 10px; border-radius: 50%; background: var(--swatch); vertical-align: -3px; }
 .target.decoy { background: radial-gradient(circle, #cbd5e1 0 10%, #475569 11% 100%); box-shadow: none; }
+
+/* Spoken-instruction transcript during calibration (accessibility). */
+.calib-transcript {
+  position: fixed; left: 50%; bottom: 4vh; transform: translateX(-50%);
+  max-width: 80vw; text-align: center; color: #cbd5e1; opacity: 0.85;
+  font-size: 1.05rem; line-height: 1.4; pointer-events: none;
+}
+
+/* Smooth-pursuit trails + Snake chase. */
+.overlay.pursuit { background: #0b1020; }
+.pursuit-dot {
+  position: fixed; top: 0; left: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+  border-radius: 50%; background: radial-gradient(circle at 35% 35%, #a78bfa, #6d28d9);
+  box-shadow: 0 0 24px rgba(167, 139, 250, 0.8); will-change: translate;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.pursuit-dot.locked { background: radial-gradient(circle at 35% 35%, #86efac, #16a34a);
+  box-shadow: 0 0 30px rgba(34, 197, 94, 0.9); }
+.pursuit-hud {
+  position: fixed; top: 3vh; right: 4vw; color: #e2e8f0; font-size: 1.4rem;
+  font-variant-numeric: tabular-nums; opacity: 0.9;
+}
+
+/* Live camera + face-mesh preview shown throughout calibration. */
+.calib-cam {
+  position: fixed; top: 18px; left: 18px; width: 300px; height: 225px;
+  border-radius: 14px; overflow: hidden; background: #0b1020;
+  border: 2px solid rgba(94, 234, 212, 0.5); box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  pointer-events: none; z-index: 5;
+}
+.calib-cam.no-face { border-color: rgba(248, 113, 113, 0.8); }
+.calib-cam-video, .calib-cam-mesh {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.calib-cam-video { background: #0b1020; }
+.calib-cam-label {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px;
+  font-size: 0.8rem; color: #e2e8f0; background: linear-gradient(transparent, rgba(0,0,0,0.6));
+}
+.calib-cam.no-face .calib-cam-label::after { content: ' — show your face'; color: #fca5a5; }
+
+/* Filling progress ring for a held head-pose step. */
+.calib-ring {
+  position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%);
+  width: 72px; height: 72px; pointer-events: none; z-index: 6;
+}
+.calib-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.calib-ring circle { fill: none; stroke-width: 5; }
+.calib-ring .track { stroke: rgba(255,255,255,0.15); }
+.calib-ring .fill {
+  stroke: var(--accent, #5eead4); stroke-linecap: round;
+  transition: stroke-dashoffset 0.15s linear;
+}
+.calib-ring.full .fill { stroke: #86efac; }
+
+/* Live gaze estimate shown during the continuous mouse-labelled tune-up, so the
+   user can see the tracker (ring) versus where they point the mouse (truth). */
+.calib-gaze-mark {
+  position: fixed; top: 0; left: 0; width: 34px; height: 34px; margin: -17px 0 0 -17px;
+  border: 3px solid rgba(96, 165, 250, 0.95); border-radius: 50%;
+  box-shadow: 0 0 12px rgba(96, 165, 250, 0.6); pointer-events: none; z-index: 7;
+}

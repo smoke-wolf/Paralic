@@ -3,6 +3,7 @@
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
 import { sounds } from '../sound.js';
+import { PursuitTrainer } from '../pursuit.js';
 
 const SIZES = [240, 190, 150, 120, 96];
 const TARGETS_PER_ROUND = 8;
@@ -51,8 +52,15 @@ export default {
         h('h1', {}, 'Pop the targets'),
         h('p', { class: 'muted', style: { maxWidth: '44ch', margin: '0 auto 28px' } },
           `Look at each target and blink twice to pop it. ${TARGETS_PER_ROUND} targets per level; they get smaller as you improve.`),
-        h('div', { class: 'btn-row' }, button(`Start level ${level}`, 'play', start, true)));
+        h('div', { class: 'btn-row' },
+          button(`Start level ${level}`, 'play', start, true),
+          button('Follow a trail', 'target', () => pursuit.run('lissajous')),
+          button('Snake chase', 'play', () => pursuit.runSnake())),
+        h('p', { class: 'muted', style: { maxWidth: '48ch', margin: '18px auto 0', fontSize: '0.9em' } },
+          'Smooth-pursuit modes: follow a moving dot with your eyes. They sharpen your tracking and, once you are calibrated, quietly fine-tune the model from the moments you stay locked on.'));
     };
+
+    const pursuit = new PursuitTrainer(app);
 
     const start = () => {
       round = { left: TARGETS_PER_ROUND, hits: 0, misses: 0, times: [], target: null, shownAt: 0 };

@@ -93,6 +93,18 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             "users": len(users.list()),
         })
 
+    @app.get("/api/trail/{kind}")
+    async def trail(kind: str, n: int = 300, seed: int = 0) -> JSONResponse:
+        """Procedural pursuit trail (normalised 0..1 waypoints) for smooth-pursuit
+        calibration and the eye-tracking games. See paralic/trails.py."""
+        from .trails import KINDS, trail as make_trail
+        if kind not in KINDS:
+            return JSONResponse({"error": f"unknown trail {kind!r}", "kinds": list(KINDS)}, status_code=404)
+        n = max(2, min(int(n), 2000))
+        pts = make_trail(kind, n=n, seed=int(seed))
+        return JSONResponse({"kind": kind, "seed": int(seed),
+                             "points": [{"x": round(x, 5), "y": round(y, 5)} for x, y in pts]})
+
     @app.websocket("/ws")
     async def eye_tracking_socket(websocket: WebSocket) -> None:
         client_host = websocket.client.host if websocket.client else None
