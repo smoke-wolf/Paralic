@@ -121,6 +121,7 @@ export default {
     let raf = 0;
     let last = 0;
     let pauseSince = null;
+    let pausedByApp = false;     // paused because the whole app paused (see below)
 
     // -- screens over the canvas ---------------------------------------------------------
     const overlay = (...children) => {
@@ -186,6 +187,8 @@ export default {
     };
 
     const resume = () => {
+      pausedByApp = false;
+      if (app.gaze && app.gaze.paused) app.gaze.setPaused(false);
       arena.querySelector('.arena-center')?.remove();
       state = 'playing';
       setAiming(true);
@@ -309,7 +312,10 @@ export default {
       last = now;
       resize();
       if (state === 'playing' && game) {
-        if (app.gaze && app.gaze.paused) pause();
+        if (app.gaze && app.gaze.paused) {
+          pause();
+          pausedByApp = true;
+        }
         game.cam += game.speed * dt;
         for (const f of game.foes) {
           if (!f.alive) continue;
@@ -589,12 +595,20 @@ export default {
     };
     bind();
     offs.push(() => bound.offs.forEach((off) => off && off()));
-    offs.push(app.on('pausechange', (paused) => { if (paused) pause(); }));
+    // The app's own pause (its button, P, a double blink to resume, the open
+    // hand) pauses the game too, and resuming it resumes the game.
+    offs.push(app.on('pausechange', (paused) => {
+      if (paused && state === 'playing') {
+        pause();
+        pausedByApp = true;
+      } else if (!paused && state === 'paused' && pausedByApp) {
+        pausedByApp = false;
+        resume();
+      }
+    }));
     const onKey = (e) => {
-      if (e.key === 'p' || e.key === 'P' || e.key === 'Escape') {
-        if (state === 'playing') pause();
-        else if (state === 'paused' && e.key !== 'Escape') resume();
-      } else if (e.key === ' ' && state === 'playing') {
+      if (e.key === 'Escape' && state === 'playing') pause();
+      else if (e.key === ' ' && state === 'playing') {
         e.preventDefault();
         shoot();                           // keyboard and mouse players
       }

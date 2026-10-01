@@ -654,8 +654,13 @@ def test_trail_shooter_blink_to_shoot(page):
             break
     assert page.evaluate(f"{game}.game.hits") > 0 and page.evaluate(f"{game}.game.score") > 0
     assert page.evaluate("document.body.classList.contains('game-aiming')")
+    # P pauses the whole app and the game with it; P again resumes both.
     page.keyboard.press("p")
-    assert page.evaluate(f"{game}.state") == "paused"
+    assert page.evaluate(f"{game}.state") == "paused" and page.evaluate("window.paralic.gaze.paused")
     assert not page.evaluate("document.body.classList.contains('game-aiming')")
+    page.keyboard.press("p")
+    assert page.evaluate(f"{game}.state") == "playing" and not page.evaluate("window.paralic.gaze.paused")
+    page.keyboard.press("Escape")
+    assert page.evaluate(f"{game}.state") == "paused"
     page.locator(".shooter-menu .btn", has_text="Levels").click()
     assert page.evaluate(f"{game}.state") == "menu"
