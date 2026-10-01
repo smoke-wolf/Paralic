@@ -42,6 +42,13 @@ your eyes or with your hand.
   become training data, and a background job keeps whichever gaze network
   predicts you best. The Lab runs A/B experiments to tune your settings.
 
+### Someone else in view
+- With several people in front of the camera, only the person being followed
+  controls Paralic. The camera view outlines "You" and "Ignored". When you look
+  away or step out, nobody else takes over: Paralic waits until your face print
+  or your place says you are back. In hand mode, the hand in control keeps
+  control when another hand appears.
+
 ### Desktop control (macOS, opt-in)
 - Move the real mouse cursor across the whole computer with your eyes or
   hand, and click with a double blink or a pinch. To stop, rest the cursor in

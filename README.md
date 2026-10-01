@@ -132,6 +132,13 @@ the camera keeps following the face of the person who chose themselves (or was r
 takes in someone else's face — and it keeps getting better. *Forget my face* (Lab page) deletes it; switching it
 off deletes it too. This is a convenience, not security: a photo would fool it.
 
+**Someone else in view** — a friend looking over your shoulder, a carer sitting beside you: Paralic sees up to
+three faces but only the person it is following controls the cursor. Everyone else's blinks and head movements
+change nothing, and the corner camera view outlines *You* and *Ignored*. If you look away or step out while
+someone else stays in view, nobody controls Paralic until you are back — it knows you by your place (for ten
+seconds) and by your face print — so a bystander never takes over. In hand mode, the hand in control keeps
+control when another hand comes into view.
+
 **Settings → Cursor movement** (per person):
 
 * **Cursor movement**: *Glide* / *Balanced* / *Snappy* — the cursor eases to where you look (it never jumps or
