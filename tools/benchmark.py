@@ -64,7 +64,8 @@ def grid21() -> list[tuple[float, float]]:
     return pts
 
 
-def label_session(user: VirtualUser, latency: float, glance_p: float, seed: int, settled: bool):
+def label_session(user: VirtualUser, latency: float, glance_p: float, seed: int, settled: bool,
+                  settle_frames: int = 16):
     """Record the 21 dots the way the page does, with eyes that take ``latency``
     seconds to reach each new dot (plus a short undershoot) and, with
     probability ``glance_p``, glance at the instructions for 0.35 s.
@@ -99,7 +100,7 @@ def label_session(user: VirtualUser, latency: float, glance_p: float, seed: int,
             t += 1 / FPS
             k += 1
             if settled:
-                if tracker.update(("cal", i, (sx, sy)), f) >= 16 or k / FPS >= 4.0:
+                if tracker.update(("cal", i, (sx, sy)), f) >= settle_frames or k / FPS >= 4.0:
                     break
             elif k / FPS >= 0.75:
                 break
@@ -603,8 +604,10 @@ def report(results: dict, seconds: float) -> str:
         (b_err, b_s), (n_err, n_s) = r["before"], r["now"]
         w(f"| {name} | {fmt(b_err, ' px')} ({fmt(b_s, ' s')}) | {fmt(n_err, ' px')} ({fmt(n_s, ' s')}) |")
     w("")
-    w("Typical eyes are as accurate as before and finish sooner; slower eyes get the time they need instead of "
-      "teaching the network where the *previous* dot was.")
+    w("Typical eyes are about as accurate as before in roughly half the time on the dots; slower eyes get the "
+      "time they need instead of teaching the network where the *previous* dot was, and glances at the "
+      "instructions are left out. (More settled frames per dot, 20 or 24 instead of 16, made no measurable "
+      "difference.)")
     w("")
     ad = results["adjust"]
     w("## Quick adjust after sitting differently")
@@ -719,7 +722,7 @@ def main(argv=None) -> int:
     started = time.perf_counter()
     results = {}
     steps = [
-        ("labels", lambda: bench_labels(max(4, args.people // 2))),
+        ("labels", lambda: bench_labels(args.people)),
         ("adjust", lambda: bench_adjust(args.people)),
         ("model_search", lambda: bench_model_search(args.people)),
         ("finetune", lambda: bench_finetune(args.people)),

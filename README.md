@@ -49,17 +49,22 @@ If port 8000 is busy the next free one is used.
 
 > No webcam? Click **Try with a mouse** on the start screen (or open `http://localhost:8000/?demo`).
 > The mouse then plays the part of your eyes: press **B** twice quickly for a double blink, hold **B** for a
-> second to close both eyes, and hold **Q** / **E** to keep your left / right eye closed.
+> second to close both eyes, and hold **Q** / **E** to keep your left / right eye closed. With the head nudge
+> switched on, the arrow keys tilt the "head".
 
 ## Using it
 
 1. **Start eye tracking** – the only click you need. Allow the camera when the browser asks.
    (Once allowed, Paralic starts the camera by itself next time.)
 2. **Camera check** – centre your face; the eyes are outlined when they are found.
-3. **Blink twice to calibrate** – follow the dot with your eyes for about 30 seconds. When asked, keep
-   looking at the centre dot and gently move your head (skip that if moving is hard for you — just keep looking).
-   Your personal neural networks are trained, five more dots measure the accuracy, and finally you blink twice
-   three times when the dot turns purple, so double blinks are tuned to how *you* blink.
+3. **Blink twice to calibrate** (about a minute and a half). First *get comfortable*: the camera view shows one
+   hint at a time (closer, a little to the left, more light in front of you…) until the face is centred, at a
+   good distance and evenly lit — a double blink skips it if you cannot move. Then look at each dot until it
+   shrinks away: a dot waits until your eyes have settled on it, so slower eyes simply get more time. When
+   asked, keep looking at the centre dot while you turn, nod and tilt your head a little (skip that if moving is
+   hard for you — just keep looking). Your personal neural networks are trained, five more dots measure the
+   accuracy, and finally you blink twice three times when the dot turns purple, so double blinks are tuned to
+   how *you* blink.
 4. **Start browsing** – look at it and blink twice.
 
 | Gesture | What it does |
@@ -74,8 +79,10 @@ If port 8000 is busy the next free one is used.
 
 Each person's calibration is saved (numbers only, no images) in `data/users/<id>/`. Several people can share
 the computer: Paralic asks who is using it. Next time you can use your calibration as is, do a
-**Quick adjust** (5 dots, ~8 seconds) or a full calibration. Quick adjust and full calibration are also
-on the Home and Settings pages.
+**Quick adjust** (eyes only: first back to where you sat while calibrating, then 9 dots, ~20 seconds) or a full
+calibration. Quick adjust and full calibration are also on the Home and Settings pages; the Lab page has a
+**mouse-guided tune-up** for a helper (the mouse pointer marks where the eyes look). A calibration from an
+older version keeps working (a full calibration makes it more accurate; the old file is kept as a backup).
 
 **Helper shortcuts** (for someone assisting): `C` full calibration · `A` quick adjust · `P` pause/resume ·
 `Esc` cancel calibration / drop a carried item / close the menu · `F11` full screen.
@@ -109,6 +116,17 @@ everything, chosen per person in **Settings → Eye gestures**:
 * **A squint or an unreliable eye**: cross-validation compares "both eyes" with each eye alone and lets a single
   eye lead when the other one misleads (e.g. a squint that comes and goes). *Tracking eye* in Settings can also
   force one eye (an eye patch, a prosthetic eye).
+
+**Settings → Cursor movement** (per person):
+
+* **Cursor movement**: *Glide* / *Balanced* / *Snappy* — the cursor eases to where you look (it never jumps or
+  overshoots); Glide is the calmest and easiest to follow, Snappy the quickest.
+* **Hold still while you look**: while the eyes rest on one place the cursor sits on the average of where they
+  look — steadier, and closer to the spot. A real eye jump moves it on at once.
+* **Head nudge** (off by default): tilt the head a little up, down, left or right to move the cursor the last bit
+  of the way, like a joystick — the further you tilt, the faster it goes; hold the head straight to stop. Looking
+  somewhere else starts afresh. *Check head directions* learns which way is which for you and how far you
+  comfortably tilt.
 
 ## Personalisation
 
@@ -154,9 +172,14 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
 
 * **MediaPipe FaceLandmarker** (Google) finds the face, places 478 landmarks (10 around the irises),
   scores 52 facial blendshapes and estimates the head pose, ~10 ms per frame on a laptop CPU.
-* **Features** (`paralic/features.py`): for each eye, where the iris sits between the eye corners and how open
-  the lids are (relative to the eye, so distance does not matter), the eye blendshapes, and head
-  yaw/pitch/roll/position — 20 numbers per frame.
+* **Features** (`paralic/features.py`): for each eye, where the iris sits between the eye corners and between
+  the lids, how open the lids are (relative to the eye, so distance does not matter), the eye axis' tilt, the eye
+  blendshapes, and head yaw/pitch/roll/position — 28 numbers per frame.
+* **Calibration labels** (`paralic/calibration.py`): a dot is only learned from frames where the eyes really
+  rested on it. Each dot's frames are split into steady stretches where the mean eye position changes
+  (measured in units of the person's own frame-to-frame noise); frames still on the previous dot, on the way,
+  or glancing at the instructions are left out, and the page keeps a dot up until enough settled frames have
+  arrived.
 * **GazeNet** (`paralic/gazenet.py`) is a small multilayer perceptron written in NumPy: two tanh hidden
   layers (32 → 16) plus a linear skip connection that is initialised with ridge regression, trained with Adam
   and a Huber loss. The weight decay is chosen by *grouped cross-validation* (whole calibration dots are held
@@ -176,24 +199,30 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
   looking just before, so the double blink clicks the right thing.
 * **Screen coordinates:** the network predicts positions on your *monitor*; the page converts them into page
   coordinates, so leaving full screen or moving the window keeps the calibration usable.
-* In the page (`web/js/gaze.js`) the cursor is animated at 60 fps, snaps to the nearest button, and each click
-  slightly corrects any drift (you can turn this off in Settings).
+* In the page (`web/js/gaze.js`, `web/js/motion.js`) the cursor glides at 60 fps on a critically damped spring,
+  rests on the average of each fixation, can be nudged with small head tilts, snaps to the nearest button, and
+  each click slightly corrects any drift (you can turn this off in Settings).
 
 Note that the website draws its own gaze cursor; the operating system's mouse pointer is not moved (the
 real mouse keeps working as usual, which is handy for a helper).
 
 ## Getting good accuracy
 
-* Light your face evenly from the front; avoid a bright window behind you.
+* Light your face evenly from the front; avoid a bright window behind you. (The *get comfortable* step checks
+  this before calibrating.)
 * Put the webcam at the top centre of the screen and sit about an arm's length (50–70 cm) away.
 * Use full screen (`F11`) for the largest targets, and calibrate the way you will sit.
-* If the cursor drifts, run **Quick adjust**; if it is far off, recalibrate.
+* If the cursor drifts, run **Quick adjust** — it first guides you back to where you sat while calibrating,
+  which is where the network is most accurate; if it is far off, recalibrate.
+* *Hold still while you look* (on by default) averages out the jitter; the head nudge covers the last few
+  pixels.
 * Webcam eye tracking is accurate to roughly 1–3 cm on the screen — that is why the site uses big buttons.
 
 ## Settings (all changeable with your eyes)
 
-Per person: what holding each eye closed does · short winks · closing both eyes · dwell click and its time ·
-wink hold time · tracking eye · wink and blink tests.
+Per person: cursor movement (glide / balanced / snappy) · hold still while you look · head nudge and its
+speed (with a head-direction check) · what holding each eye closed does · short winks · closing both eyes ·
+dwell click and its time · wink hold time · tracking eye · wink and blink tests.
 In this browser: cursor smoothing (Auto = learned) · snap to buttons (Auto) · double-blink speed (Personal) ·
 blink sensitivity (Personal) · scroll speed · learn from clicks (drift correction) · keep learning my eyes
 (fine-tuning) · cursor size · camera preview · sounds · speaking speed.
@@ -239,8 +268,10 @@ paralic/            Python package (server + eye tracking)
 web/                the website (vanilla HTML/CSS/JS modules, no build step)
   js/tracker.js     camera capture + WebSocket client (and the mouse demo mode)
   js/gaze.js        gaze cursor, snapping, double-blink and dwell clicks, scroll rail, pause
+  js/motion.js      cursor glide, "hold still while you look", head nudge
+  js/position.js    the seating-position check before calibrating
   js/gestures.js    press / drag / drop, the gaze menu ("right click"), drag lock
-  js/calibration.js calibration / validation / quick adjust / blink and wink tests
+  js/calibration.js calibration / validation / quick adjust / blink, wink and head-direction tests
   js/pages/…        Home, Explore, Read, Talk, Arrange, Draw, Practice, Lab, Settings, Help
 tests/              unit, integration (real MediaPipe) and browser tests
 ```
@@ -259,9 +290,10 @@ PARALIC_FAKE_VIDEO=/tmp/face.y4m python -m pytest --runslow tests/test_browser.p
 
 The MediaPipe integration tests download a public-domain test portrait on first use and are skipped offline.
 
-`python tools/benchmark.py` runs the personalisation benchmark on simulated people (model search,
-fine-tuning under drift and with bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B
-decisions) and writes [docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people.
+`python tools/benchmark.py` runs the personalisation benchmark on simulated people (calibration labels for
+slow and glancing eyes, quick adjust after sitting differently, model search, fine-tuning under drift and with
+bad labels, one-eye networks, smoothing, blink and wink thresholds, A/B decisions) and writes
+[docs/benchmark.md](docs/benchmark.md). It uses simulated eyes, not real people.
 
 ## License
 

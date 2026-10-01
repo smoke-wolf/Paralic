@@ -178,13 +178,15 @@ def segments(Z: np.ndarray, min_seg: int = 4, chi_min: float = 30.0) -> list[tup
     return sorted(out)
 
 
-def _matches(Z: np.ndarray, rest: Optional[tuple[np.ndarray, int]], chi_max: float) -> bool:
+def _matches(Z: np.ndarray, rest: Optional[tuple[np.ndarray, int]], chi_max: float, tol: float = 0.35) -> bool:
     """Whether frames ``Z`` (noise units) still show the eyes where they rested
-    before: ``rest`` = (mean, number of frames it averages), in noise units."""
+    before: ``rest`` = (mean, number of frames it averages), in noise units.
+    ``tol`` allows for a small shift between two rests at the same place
+    (the head sways, the eyes drift a little) on top of the averages' noise."""
     if rest is None or len(Z) == 0:
         return False
     mean, n = rest
-    d = (Z.mean(axis=0) - mean) / np.sqrt(1.0 / len(Z) + 1.0 / max(1, n))
+    d = (Z.mean(axis=0) - mean) / np.sqrt(1.0 / len(Z) + 1.0 / max(1, n) + tol ** 2)
     return bool((d ** 2).sum() <= chi_max)
 
 
@@ -284,13 +286,16 @@ class SettleTracker:
         return np.maximum(1.4826 * np.median(np.array(self.steps), axis=0) / np.sqrt(2.0), 0.003)
 
     def _rest(self) -> Optional[tuple[np.ndarray, int]]:
-        """Where the eyes rested at the end of the current dot (eye features, frames)."""
+        """Where the eyes rested at the end of the current dot (eye features,
+        frames): the last few frames of its last steady stretch (not its start,
+        where the eyes may still be correcting after the jump)."""
         if len(self.frames) < 4:
             return None
         E = np.array(self.frames)[:, list(FIXATION_IDX)]
         sigma = self.sigma()
         sigma = noise_sigma(np.array(self.frames)) if sigma is None else sigma
         lo, hi = segments(E / sigma)[-1]
+        lo = max(lo, hi - 8)
         return E[lo:hi].mean(axis=0), hi - lo
 
     def update(self, key: tuple, vector: np.ndarray) -> int:

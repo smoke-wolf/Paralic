@@ -13,9 +13,10 @@ these behaviours.
 
 | Contract | Web | macOS | Status |
 | --- | --- | --- | --- |
-| Feature vector: 20 columns, same order and meaning (`r_dx … tz`) | `features.py` `FEATURE_NAMES` | `Features.swift` `FeatureLayout` | ✅ same layout |
+| Feature vector: columns 0–19 in the same order and meaning (`r_dx … tz`) | `features.py` `FEATURE_NAMES` | `Features.swift` `FeatureLayout` | ✅ same layout for 0–19 |
+| Columns 20–27 (full mesh): `r_vlid`, `l_vlid` (iris height between the lids, 0 top … 1 bottom, 0.5 when the lid opening is under 4 % of the eye width, clipped to −0.5…1.5), `r_tilt`, `l_tilt`, squint and wide blendshapes | `features.py` (`FEATURE_VERSION = 2`) | — | ⏳ macOS has 20 columns; its `Features.swift` header still says it mirrors `features.py` |
 | Head-pose columns 14–19 | `HEAD_FEATURE_IDX` | `headPoseColumns` | ✅ |
-| One-eye inputs: right = 0,1,4,10–13 + head; left = 2,3,5,6–9 + head | `EYE_INPUTS` | (`dropColumns` can express them) | ⏳ macOS has no one-eye networks yet |
+| One-eye inputs: right = 0,1,4,10–13,20,22,24,26 + head; left = 2,3,5,6–9,21,23,25,27 + head | `EYE_INPUTS` | (`dropColumns` can express them) | ⏳ macOS has no one-eye networks yet |
 | "left" means the **person's own** left eye | MediaPipe convention, checked by `tests/test_mediapipe.py::test_closing_one_eye_raises_only_that_eyes_closure` | Vision `leftEye` / `rightEye` | ⚠️ verify on a Mac: close one eye and check which contour's aperture drops before using it for winks |
 | GazeNet: 32×16 tanh MLP + ridge-initialised linear skip, Huber, Adam with cosine decay, grouped CV over L2 {1e-3, 1e-2, 1e-1}, ensemble of 3, affine correction clamped to singular values 0.6–1.6 | `gazenet.py` | `GazeNet.swift` | ✅ same algorithm |
 | Blink detector: adaptive median baseline, `t_close = b + sensitivity·(1−b)`, double blink by gap | `blink.py` | `BlinkDetector.swift` | ✅ core identical (see gaps) |
@@ -52,6 +53,22 @@ web's). Each person's network is trained on its own platform's features, so this
    is the model search run during fine-tuning).
 9. **Interaction**: dwell click, held-wink press/drag/drop, the gaze menu (long press), drag lock,
    per-person gesture settings — not built on macOS yet (its `Control/` and `UI/` are still to come).
+10. **Calibration labels** (`calibration.py`): a dot stays up until the server's `settled` count (frames
+    of the last steady stretch, `SettleTracker`) reaches its target, at most 4 s, shortened after two
+    timeouts in a row. Training splits each dot into steady stretches (`segments`: change points of the
+    mean of columns 0–3, 20, 21 in units of the noise pooled over the dots; split when Σ t² ≥ 30), drops
+    stretches still on the previous dot (Σ d² ≤ 25) and keeps the stretch that ended the recording, minus
+    its first 3 frames. Runs of dots start in the centre (where the countdown is). Head-movement groups
+    share a total weight of 9 (each dot weighs 1). In simulation this keeps typical eyes as accurate in about
+    half the time on the dots and makes slow or glancing eyes much more accurate (`docs/benchmark.md`).
+11. **Setup and quick adjust**: a seating-position check before calibrating (distance, centring, light;
+    `web/js/position.js`; the frame message carries `pos` and, on request, `light`) that guides the person
+    back to the calibrated pose (`calibrated_pose`) before a quick adjust; the quick adjust is 9 dots with
+    the eyes alone.
+12. **Cursor motion** (`web/js/motion.js`, per person): critically damped spring glide (ω = 9.5 / 17 / 30),
+    "hold still while you look" (a running, then 0.6 s moving, average per fixation; a new fixation after
+    two samples outside the radius), and the head nudge (joystick past a dead zone, signs learned by a
+    head-direction check, the gaze point held still while nudging).
 
 ## Issues found in the macOS code
 

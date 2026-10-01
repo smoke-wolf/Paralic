@@ -297,6 +297,49 @@ def test_dwell_click_when_enabled(page):
     page.wait_for_timeout(300)
 
 
+def test_head_nudge_moves_the_cursor_until_the_eyes_look_elsewhere(page):
+    page.evaluate("""window.paralic.tracker.request({type: 'gestures_set',
+                                                    gestures: {head_nudge: true, nudge_speed: 100}}, 'personal')""")
+    page.wait_for_function("window.paralic.tracker.headKeys === true")
+    page.mouse.move(800, 450, steps=4)
+    page.wait_for_timeout(600)
+    start = page.evaluate("window.paralic.gaze.rawPoint")
+    # Demo mode: a held arrow key tilts the "head" to the right, then up.
+    page.keyboard.down("ArrowRight")
+    page.wait_for_timeout(700)
+    page.keyboard.up("ArrowRight")
+    page.keyboard.down("ArrowUp")
+    page.wait_for_timeout(500)
+    page.keyboard.up("ArrowUp")
+    page.wait_for_timeout(400)
+    moved = page.evaluate("window.paralic.gaze.rawPoint")
+    assert moved["x"] > start["x"] + 60 and moved["y"] < start["y"] - 30, (start, moved)
+    # Holding the head straight keeps the nudged position.
+    page.wait_for_timeout(500)
+    held = page.evaluate("window.paralic.gaze.rawPoint")
+    assert abs(held["x"] - moved["x"]) < 5 and abs(held["y"] - moved["y"]) < 5
+    # Looking somewhere else starts afresh.
+    page.mouse.move(400, 300, steps=4)
+    page.wait_for_timeout(700)
+    fresh = page.evaluate("window.paralic.gaze.rawPoint")
+    assert abs(fresh["x"] - 400) < 8 and abs(fresh["y"] - 300) < 8, fresh
+    # Switched off, the arrow keys are left alone.
+    page.evaluate("window.paralic.tracker.request({type: 'gestures_set', gestures: {head_nudge: false}}, 'personal')")
+    page.wait_for_function("window.paralic.tracker.headKeys === false")
+
+
+def test_settings_offer_cursor_movement_choices(page):
+    page.evaluate("location.hash = '#/settings'")
+    page.wait_for_selector('[data-gesture="motion"]')
+    look_at(page, '[data-gesture="motion"] .opt[data-value="glide"]')
+    double_blink(page)
+    page.wait_for_function("window.paralic.state.personal.gestures.motion === 'glide'")
+    assert page.evaluate("window.paralic.gaze.motion.style") == "glide"
+    look_at(page, '[data-gesture="motion"] .opt[data-value="balanced"]')
+    double_blink(page)
+    page.wait_for_function("window.paralic.state.personal.gestures.motion === 'balanced'")
+
+
 def test_long_close_menu_and_drag_lock(page):
     page.evaluate("window.paralic.tracker.request({type: 'gestures_set', gestures: {long_close: 'menu'}}, 'personal')")
     page.evaluate("location.hash = '#/arrange'")

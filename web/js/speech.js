@@ -12,7 +12,9 @@ export function canSpeak() {
 /**
  * Say something (interrupting whatever is being said). Resolves when the
  * sentence has been spoken, could not be spoken, or was interrupted — so a
- * caller can wait for an instruction to finish before moving on.
+ * caller can wait for an instruction to finish before moving on. If speech
+ * has not started after a moment (no voices, no audio device) it resolves
+ * then rather than never.
  */
 export function speak(text) {
   const clean = String(text || '').trim();
@@ -26,6 +28,9 @@ export function speak(text) {
       window.speechSynthesis.cancel();
       const u = new SpeechSynthesisUtterance(clean);
       u.rate = RATES[getSettings().speechRate] || 1;
+      let started = false;
+      u.onstart = () => { started = true; };
+      setTimeout(() => { if (!started) resolve(); }, 1200);
       u.onend = () => resolve();
       u.onerror = (e) => {
         if (e.error === 'not-allowed') toast('Click anywhere once to allow speech in this browser', 'warn', 5000);

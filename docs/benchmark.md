@@ -2,16 +2,39 @@
 
 Produced by `python tools/benchmark.py`. **These are simulations**: virtual eyes from `tests/synthetic.py` and synthetic eyelid traces, not measurements on real people. They check that each mechanism does what it should and show the size of the effect in simulation; on a real person the same procedures run on that person's own data.
 
+## Calibration labels: which frames show the eyes on the dot
+
+The 21-dot calibration with eyes that need some time to reach each new dot (and sometimes glance at the instructions). *Before*: frames labelled for a fixed 0.75 s starting 1.34 s after the dot moved, outliers rejected. *Now*: labelling starts 0.6 s after the dot moved and lasts until the server reports 16 frames of a settled gaze on the dot (at most 4 s); training keeps the fixation the frames end on. Error of the average prediction over a short fixation at new screen positions; time spent on the dots.
+
+| Eyes | Before | Now |
+| --- | --- | --- |
+| typical eyes (0.25 s to reach a dot) | 20 px (44 s) | 21 px (24 s) |
+| slow eyes (0.9 s) | 21 px (44 s) | 21 px (31 s) |
+| slow eyes + glances at the text | 32 px (44 s) | 23 px (33 s) |
+| very slow eyes (1.3 s) | 30 px (44 s) | 23 px (38 s) |
+
+Typical eyes are about as accurate as before in roughly half the time on the dots; slower eyes get the time they need instead of teaching the network where the *previous* dot was, and glances at the instructions are left out. (More settled frames per dot, 20 or 24 instead of 16, made no measurable difference.)
+
+## Quick adjust after sitting differently
+
+Calibrated sitting normally, then sitting differently. Error with no adjustment, after a quick adjust with 5 or 9 dots, and after first moving back towards the calibrated position until the position check is satisfied (within 3 cm side to side and up / down, 8 % of the distance; simulated at the edge of that) and then 9 dots.
+
+| Sitting | No adjust | 5 dots | 9 dots | Back in place + 9 dots |
+| --- | --- | --- | --- | --- |
+| moved back and down | 142 px | 27 px | 24 px | 23 px |
+| leaned to the left | 203 px | 21 px | 21 px | 21 px |
+| slumped | 72 px | 24 px | 22 px | 22 px |
+
 ## Gaze network: per-person model search
 
 8 simulated people; calibration plus 24 practice hits (the data fine-tuning works with). Error of the average prediction over a short fixation at new screen positions (1920×1080 screen).
 
 | Model | Median error |
 | --- | --- |
-| Default (32×16 network, weight decay chosen by cross-validation) | 19 px |
-| Per-person search (3 sizes × 3 weight decays + linear) | 18 px |
+| Default (32×16 network, weight decay chosen by cross-validation) | 18 px |
+| Per-person search (3 sizes × 3 weight decays + linear) | 20 px |
 
-The search beat the default for 38 % of people; architectures chosen: 32x16 l2=0.01, 32x16 l2=0.1, linear. On these simulated eyes the wider search brings no clear gain (their features are close to linear in the gaze position); it only replaces the current network when it wins on the person's own held-out recent clicks, so it costs training time but cannot make the cursor worse.
+The search beat the default for 12 % of people; architectures chosen: 16x8 l2=0.001, 32x16 l2=0.1, linear. On these simulated eyes the wider search brings no clear gain (their features are close to linear in the gaze position); it only replaces the current network when it wins on the person's own held-out recent clicks, so it costs training time but cannot make the cursor worse.
 
 ## Fine-tuning while the site is used (champion / challenger)
 
@@ -19,9 +42,9 @@ Calibrated in one position, then the practice hits / clicks of one session. A ch
 
 | Situation | Accepted | Refused (unreliable data) | Median error before → after (accepted) | Worst single change |
 | --- | --- | --- | --- | --- |
-| Moved in the chair (24 practice hits) | 8/8 | 0/8 | 134 px → 33 px | -43 px |
-| Moved, 20 % of labels wrong | 8/8 | 0/8 | 134 px → 52 px | -41 px |
-| Same position as calibration | 2/8 | 0/8 | 19 px → 18 px | +2 px |
+| Moved in the chair (24 practice hits) | 8/8 | 0/8 | 134 px → 36 px | -51 px |
+| Moved, 20 % of labels wrong | 8/8 | 0/8 | 134 px → 49 px | -42 px |
+| Same position as calibration | 2/8 | 0/8 | 23 px → 26 px | +4 px |
 | All labels wrong | 0/8 | 8/8 | – | – |
 
 When nothing changed, a swap is between two practically equal networks (the held-out test accepts at p < 0.2 to adapt quickly when something did change), so its effect is within a few pixels either way.
@@ -33,10 +56,10 @@ When nothing changed, a swap is between two practically equal networks (the held
 | Cursor during a left-eye wink | Median error |
 | --- | --- |
 | (both eyes open, for reference) | 19 px |
-| Two-eye network | 227 px |
+| Two-eye network | 237 px |
 | Right-eye network, aligned before the wink (what Paralic does) | 30 px |
 
-A squint that comes and goes (right eye off by ~3° on each fixation): cross-validation made the left eye lead for 7/8 people (and kept both eyes for 8/8 people without a squint). Error with the chosen network 29 px vs 34 px with both eyes.
+A squint that comes and goes (right eye off by ~3° on each fixation): cross-validation made the left eye lead for 8/8 people (and kept both eyes for 8/8 people without a squint). Error with the chosen network 23 px vs 35 px with both eyes.
 
 ## Cursor smoothing tuned to each person's jitter
 
@@ -79,4 +102,4 @@ Rounds of 12 targets (4 per variant), log-normal target times (σ = 0.35), up to
 | One arm 25 % faster | 68 % | 0 % | 3 |
 | No real difference | 0 % | 8 % | – |
 
-_Run time 318 s._
+_Run time 528 s._
