@@ -759,7 +759,14 @@ class App {
     if (this.handCalibrator.running) return { ok: false };
     if (kind === 'point' && !this.state.hand) kind = 'full';
     if (this.gaze.paused) this.gaze.setPaused(false);
-    const r = await this.handCalibrator.run({ mode: kind });
+    let r = { ok: false };
+    try {
+      r = await this.handCalibrator.run({ mode: kind });
+    } catch (err) {
+      // The tracker did not answer (e.g. the connection dropped): say so and
+      // keep the hand usable rather than leaving the page without a cursor.
+      toast(`The hand setup stopped: ${err.message || err}. Try again from Settings when you are ready.`, 'warn', 8000);
+    }
     this.state.calibrated = true;
     this.gaze.setActive(true);
     if (r.ok) this.emit('calibrated', { hand: r.result });
