@@ -8,6 +8,7 @@ import { EyeTracker, SimTracker } from './tracker.js';
 import { GazeController } from './gaze.js';
 import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
+import { HandCalibrator } from './hand-calibration.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
 import { unlockAudio } from './sound.js';
@@ -232,12 +233,14 @@ class App {
   }
 
   // -- tracker setup -------------------------------------------------------------------
-  createTracker(simulated) {
+  createTracker(simulated, mode = 'eyes') {
     if (this.gestures) this.gestures.detach();
     if (this.gaze) this.gaze.destroy();
     const frameWidth = Number(params.get('fw')) || 960;
-    this.tracker = simulated ? new SimTracker() : new EyeTracker({ frameWidth });
+    this.tracker = simulated ? new SimTracker() : new EyeTracker({ frameWidth, mode });
     this.state.simulated = simulated;
+    this.state.handMode = mode === 'hand';
+    document.body.classList.toggle('hand-mode', this.state.handMode);
     this.gaze = new GazeController(this.tracker, { cursorEl: $('#gaze-cursor'), pageEl: this.pageEl, railEl: $('#scroll-rail') });
     this.gaze.addEventListener('activate', (e) => this.emit('activate', e.detail));
     this.gestures = new GestureController(this);
@@ -247,6 +250,17 @@ class App {
       this.emit('pausechange', e.detail);
     });
     this.camera = new CameraPanel(this.tracker);
+    // Hand mode: pinch-drag scroll and open-palm pause arrive as their own
+    // messages (clicks reuse the double-blink path, so the cursor code is shared).
+    this.tracker.on('hand_scroll', (m) => {
+      const sc = (this.gaze && this.gaze.scrollContainer && this.gaze.scrollContainer())
+        || document.scrollingElement || document.documentElement;
+      if (sc && typeof m.dy === 'number') sc.scrollBy(0, m.dy);
+    });
+    this.tracker.on('hand_pause', (m) => {
+      if (this.gaze && this.gaze.setPaused) this.gaze.setPaused(!!m.paused);
+      toast(m.paused ? 'Paused — open palm again to resume' : 'Resumed', 'ok');
+    });
     this.tracker.on('fatal', (m) => this.showFatal(m.error));
     this.tracker.on('connection', ({ connected }) => {
       if (!connected && this.state.started) toast('Lost connection to the eye tracker — reconnecting…', 'warn');
@@ -356,6 +370,8 @@ class App {
     const errorBox = h('div', { class: 'error-box', hidden: true });
     const startBtn = h('button', { class: 'btn primary', type: 'button', id: 'start-btn' });
     startBtn.innerHTML = `${icon('eye')}<span>Start eye tracking</span>`;
+    const handBtn = h('button', { class: 'btn', type: 'button', id: 'hand-btn' });
+    handBtn.innerHTML = `${icon('mouse')}<span>Use your hands</span>`;
     const demoBtn = h('button', { class: 'btn', type: 'button', id: 'demo-btn' });
     demoBtn.innerHTML = `${icon('mouse')}<span>Try with a mouse</span>`;
     const tips = [
@@ -369,7 +385,7 @@ class App {
           h('div', { class: 'eyebrow' }, 'Hands-free browsing'),
           h('h1', {}, 'Browse the web with your eyes.'),
           h('p', { class: 'lead' }, 'Paralic uses your webcam and neural networks to follow your gaze. Look to move, blink twice to click.'),
-          h('div', { class: 'start-actions' }, startBtn, demoBtn),
+          h('div', { class: 'start-actions' }, startBtn, handBtn, demoBtn),
           h('ul', { class: 'start-list' }, tips.map(([ic, text]) => h('li', { html: `${icon(ic)}<span>${text}</span>` }))),
           errorBox),
         h('div', { class: 'start-visual' }, h('div', { class: 'start-eye' }))));
@@ -390,6 +406,11 @@ class App {
       if (!params.has('nofs')) document.documentElement.requestFullscreen?.().catch(() => {});
       this.startTracking(ov, card, errorBox);
     });
+    handBtn.addEventListener('click', () => {
+      unlockAudio();
+      if (!params.has('nofs')) document.documentElement.requestFullscreen?.().catch(() => {});
+      this.startTracking(ov, card, errorBox, 'hand');
+    });
     demoBtn.addEventListener('click', () => {
       unlockAudio();
       this.startDemo(ov);
@@ -397,6 +418,10 @@ class App {
 
     if (params.has('demo')) {
       this.startDemo(ov);
+      return;
+    }
+    if (params.has('hands')) {
+      this.startTracking(ov, card, errorBox, 'hand');
       return;
     }
     // If the camera is already allowed (and the tracker is OK), start right away: no click needed.
@@ -408,12 +433,12 @@ class App {
     });
   }
 
-  async startTracking(ov, card, errorBox) {
+  async startTracking(ov, card, errorBox, mode = 'eyes') {
     if (this.state.started) return;
     this.state.started = true;
     unlockAudio();
     errorBox.hidden = true;
-    if (!this.tracker || this.tracker.simulated) this.createTracker(false);
+    if (!this.tracker || this.tracker.simulated || this.tracker.mode !== mode) this.createTracker(false, mode);
     try {
       await this.tracker.start($('#camera-video'));
     } catch (err) {
@@ -459,9 +484,10 @@ class App {
 
   /** Show the camera, wait until a face is found, then load or create a calibration. */
   async faceCheck(ov) {
+    const hand = this.state.handMode;
     const preview = this.makePreview();
-    const status = h('p', { class: 'big-status' }, 'Looking for your face…');
-    const hint = h('p', { class: 'muted' }, 'Centre your face in the oval.');
+    const status = h('p', { class: 'big-status' }, hand ? 'Looking for your hand…' : 'Looking for your face…');
+    const hint = h('p', { class: 'muted' }, hand ? 'Raise one hand into view.' : 'Centre your face in the oval.');
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'face-check' },
         preview.el,
@@ -476,18 +502,23 @@ class App {
       const off = this.tracker.on('frame', (m) => {
         if (!m.face) {
           good = 0;
-          status.textContent = 'Looking for your face…';
-          hint.textContent = 'Centre your face in the oval and make sure it is well lit.';
+          status.textContent = hand ? 'Looking for your hand…' : 'Looking for your face…';
+          hint.textContent = hand ? 'Raise one hand into view, fingers spread.'
+            : 'Centre your face in the oval and make sure it is well lit.';
           preview.guide.classList.remove('ok');
           return;
         }
         preview.guide.classList.add('ok');
-        const [yaw, pitch] = m.head || [0, 0];
-        if (m.dist && m.dist < 30) hint.textContent = 'You are quite close — lean back a little.';
-        else if (m.dist && m.dist > 95) hint.textContent = 'You are far away — move a little closer.';
-        else if (Math.abs(yaw) > 22 || Math.abs(pitch) > 22) hint.textContent = 'Face the screen straight on.';
-        else hint.textContent = 'Great — hold still…';
-        status.textContent = 'Face found';
+        if (hand) {
+          hint.textContent = 'Great — hold still…';
+        } else {
+          const [yaw, pitch] = m.head || [0, 0];
+          if (m.dist && m.dist < 30) hint.textContent = 'You are quite close — lean back a little.';
+          else if (m.dist && m.dist > 95) hint.textContent = 'You are far away — move a little closer.';
+          else if (Math.abs(yaw) > 22 || Math.abs(pitch) > 22) hint.textContent = 'Face the screen straight on.';
+          else hint.textContent = 'Great — hold still…';
+        }
+        status.textContent = hand ? 'Hand found' : 'Face found';
         good += 1;
         if (good >= 20 && hello && performance.now() - shownAt > 1500) {
           off();
@@ -500,10 +531,19 @@ class App {
     card.remove();
     this.camera.setVisible(getSettings().showCamera);
 
-    // Who is it? Recognised by their face print - else, when several people
-    // use this computer, ask.
-    const known = await this.recognise(ov);
+    // Who is it? Recognised by their face print (eye mode) - else, when
+    // several people use this computer, ask.
+    const known = this.state.handMode ? null : await this.recognise(ov);
     if (!known && (this.state.people || []).length > 1) await this.pickPerson(ov);
+    if (this.state.handMode) {
+      // Hand mode: run (or reuse) the person's pointing + pinch setup.
+      await this.runHandSetup(ov);
+      this.state.calibrated = true;
+      this.gaze.setActive(true);
+      this.closeOverlay(ov);
+      this.welcome();
+      return;
+    }
     await this.enterAsPerson(ov, known);
   }
 
@@ -549,6 +589,31 @@ class App {
         toast(`Could not switch: ${err.message || err}`, 'bad');
       }
     });
+  }
+
+  /** Hand mode: run a fresh pointing+pinch setup, or reuse a saved one. */
+  async runHandSetup(ov) {
+    const cal = new HandCalibrator(this);
+    const saved = this.state.hello && this.state.hello.calibration;
+    let mode = 'full';
+    if (saved) {
+      this.gaze.setActive(true);
+      this.gaze.setSuspended(false);
+      const choice = await this.choose(ov, {
+        choices: [
+          { id: 'use', label: 'Use saved setup', sub: 'Keep your last hand calibration', icon: 'check', primary: true },
+          { id: 'point', label: 'Quick re-point', sub: 'Redo just the pointing dots', icon: 'mouse' },
+          { id: 'full', label: 'Full setup', sub: 'Hand span, pointing and pinch', icon: 'refresh' },
+        ],
+      }).catch(() => 'use');
+      this.gaze.setSuspended(true);
+      if (choice === 'use') {
+        await this.tracker.request({ type: 'hand_profile_use' }, 'hand_calibration_result', 8000).catch(() => {});
+        return;
+      }
+      mode = choice === 'point' ? 'point' : 'full';
+    }
+    await cal.run({ mode });
   }
 
   /** Load the current person's calibration and offer to use, adjust or redo it.

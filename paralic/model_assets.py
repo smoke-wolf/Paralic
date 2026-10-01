@@ -17,6 +17,9 @@ log = logging.getLogger(__name__)
 FACE_LANDMARKER_URL = (
     "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
 )
+HAND_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"
+)
 
 
 class ModelUnavailable(RuntimeError):
@@ -42,12 +45,21 @@ def _ssl_contexts():
 
 
 def ensure_face_model(path: Path, url: str = FACE_LANDMARKER_URL) -> Path:
-    """Return ``path``, downloading the model there first if needed."""
+    """Return ``path``, downloading the FaceLandmarker model there first if needed."""
+    return _ensure_model(path, url, "face landmarker (~3.7 MB)")
+
+
+def ensure_hand_model(path: Path, url: str = HAND_LANDMARKER_URL) -> Path:
+    """Return ``path``, downloading the HandLandmarker model there first if needed."""
+    return _ensure_model(path, url, "hand landmarker (~7.5 MB)")
+
+
+def _ensure_model(path: Path, url: str, label: str) -> Path:
     path = Path(path)
     if _is_valid_model(path):
         return path
     path.parent.mkdir(parents=True, exist_ok=True)
-    log.info("Downloading MediaPipe face landmarker model (~3.7 MB) to %s", path)
+    log.info("Downloading MediaPipe %s model to %s", label, path)
     last_error: Exception | None = None
     for ctx in _ssl_contexts():
         fd, tmp = tempfile.mkstemp(dir=path.parent, suffix=".part")
@@ -66,6 +78,6 @@ def ensure_face_model(path: Path, url: str = FACE_LANDMARKER_URL) -> Path:
             if os.path.exists(tmp):
                 os.unlink(tmp)
     raise ModelUnavailable(
-        f"Could not download the face landmarker model ({last_error}).\n"
+        f"Could not download the {label} model ({last_error}).\n"
         f"Download it manually from\n  {url}\nand save it as\n  {path}"
     )

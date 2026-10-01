@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
+from .hand_session import HandSession
+from .hands import HandTracker
 from .session import TrackerSession
 from .tracker import FaceTracker
 from .users import UserStore
@@ -63,6 +65,7 @@ def _unavailable(error: Optional[str]) -> Callable[[], FaceTracker]:
 
 def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
                tracker_factory: Optional[Callable[[], FaceTracker]] = None,
+               hand_tracker_factory: Optional[Callable[[], HandTracker]] = None,
                model_error: Optional[str] = None, allowed_hosts=LOCAL_HOSTS) -> FastAPI:
     """Build the application.
 
@@ -132,13 +135,24 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             except RuntimeError:  # the server is shutting down
                 pass
 
-        if tracker_factory is None:
-            # No face tracking, but keep the connection for people / lab commands (demo mode).
-            outbox.put_nowait({"type": "fatal", "error": model_error or "Eye tracker unavailable"})
-        factory = tracker_factory or _unavailable(model_error)
+        hand_mode = websocket.query_params.get("mode") == "hand"
         # One worker thread per connection keeps MediaPipe calls ordered.
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paralic-session")
-        session = await loop.run_in_executor(executor, lambda: TrackerSession(factory, users, push=push))
+        if hand_mode:
+            if hand_tracker_factory is None:
+                outbox.put_nowait({"type": "fatal", "error": "Hand tracker unavailable"})
+                hfac = _unavailable("Hand tracker unavailable")
+            else:
+                hfac = hand_tracker_factory
+            hand_profile = Path(data_dir) / "hand_profile.json"
+            session = await loop.run_in_executor(
+                executor, lambda: HandSession(hfac, push=push, profile_path=hand_profile))
+        else:
+            if tracker_factory is None:
+                # No face tracking, but keep the connection for people / lab commands (demo mode).
+                outbox.put_nowait({"type": "fatal", "error": model_error or "Eye tracker unavailable"})
+            factory = tracker_factory or _unavailable(model_error)
+            session = await loop.run_in_executor(executor, lambda: TrackerSession(factory, users, push=push))
         send_task = asyncio.create_task(sender())
         try:
             while not send_task.done():

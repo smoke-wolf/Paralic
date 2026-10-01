@@ -546,6 +546,12 @@ a.card:hover, button.card:hover { background: var(--card-hover); }
 .calib-progress { position: fixed; left: 50%; bottom: 4vh; translate: -50% 0; display: flex; gap: 8px; }
 .calib-progress i { width: 12px; height: 12px; border-radius: 50%; background: rgba(255, 255, 255, 0.14); }
 .calib-progress i.done { background: var(--accent); }
+.calib-meter { position: fixed; left: 50%; bottom: 10vh; translate: -50% 0; width: min(320px, 60vw);
+  height: 12px; border-radius: 999px; background: rgba(255, 255, 255, 0.14); overflow: hidden; }
+.calib-meter i { display: block; height: 100%; width: 0; background: var(--accent); transition: width 0.15s ease; }
+.practice-target { border: none; cursor: pointer; background: radial-gradient(circle at 35% 30%, #c4b5fd, var(--accent));
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35); animation: practice-pulse 1.4s ease-in-out infinite; }
+@keyframes practice-pulse { 0%, 100% { transform: translate(-50%, -50%) scale(1); } 50% { transform: translate(-50%, -50%) scale(1.08); } }
 .calib-warning { position: fixed; left: 50%; top: 4vh; translate: -50% 0; padding: 10px 22px; border-radius: 999px; background: rgba(251, 191, 36, 0.14); color: var(--warn); font-weight: 650; }
 .head-guide { position: fixed; width: 170px; height: 170px; margin: -85px 0 0 -85px; border-radius: 50%; border: 2px dashed rgba(94, 234, 212, 0.4); animation: spin 5s linear infinite; pointer-events: none; }
 @keyframes spin { to { rotate: 360deg; } }
