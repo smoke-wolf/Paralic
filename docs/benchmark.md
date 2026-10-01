@@ -17,12 +17,14 @@ The search beat the default for 38 % of people; architectures chosen: 32x16 l2=0
 
 Calibrated in one position, then the practice hits / clicks of one session. A challenger replaces the current network only if it wins on the most recent, held-out hits.
 
-| Situation | Accepted | Refused (unreliable data) | Error before → after (accepted) | Made worse |
+| Situation | Accepted | Refused (unreliable data) | Median error before → after (accepted) | Worst single change |
 | --- | --- | --- | --- | --- |
-| Moved in the chair (24 practice hits) | 8/8 | 0/8 | 134 px → 33 px | 0 |
-| Moved, 20 % of labels wrong | 8/8 | 0/8 | 134 px → 52 px | 0 |
-| Same position as calibration | 2/8 | 0/8 | 19 px → 18 px | 1 |
-| All labels wrong | 0/8 | 8/8 | – | 0 |
+| Moved in the chair (24 practice hits) | 8/8 | 0/8 | 134 px → 33 px | -43 px |
+| Moved, 20 % of labels wrong | 8/8 | 0/8 | 134 px → 52 px | -41 px |
+| Same position as calibration | 2/8 | 0/8 | 19 px → 18 px | +2 px |
+| All labels wrong | 0/8 | 8/8 | – | – |
+
+When nothing changed, a swap is between two practically equal networks (the held-out test accepts at p < 0.2 to adapt quickly when something did change), so its effect is within a few pixels either way.
 
 ## One-eye networks
 
@@ -77,4 +79,4 @@ Rounds of 12 targets (4 per variant), log-normal target times (σ = 0.35), up to
 | One arm 25 % faster | 68 % | 0 % | 3 |
 | No real difference | 0 % | 8 % | – |
 
-_Run time 338 s._
+_Run time 318 s._

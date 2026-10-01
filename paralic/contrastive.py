@@ -77,6 +77,7 @@ def contrastive_finetune(
     margin: float = 0.6, lam_neg: float = 0.4, iters: int = 160, lr: float = 0.003,
     l2: float = 1e-2, delta: float = 0.35, test_fraction: float = 0.3,
     min_positives: int = 20, tol: float = 0.02, min_gain: float = 0.03, seed: int = 0,
+    eye: Optional[str] = None,
 ) -> tuple[Optional[GazeNet], dict]:
     """Fine-tune ``champion`` with manual-mode positives and directional negatives.
 
@@ -87,6 +88,11 @@ def contrastive_finetune(
 
     ``margin`` is in units of the output standardisation (≈ std of calibration
     targets), so it is resolution independent.
+
+    The network tuned (and judged) is the one that drives the cursor: ``eye``
+    ("both", "left", "right"), by default the model's leading network - for
+    some people a one-eye network leads (see ``GazeNet.eyes``). The other
+    networks are left as they are.
     """
     started = time.perf_counter()
     pos_X = np.asarray(pos_X, float)
@@ -110,7 +116,7 @@ def contrastive_finetune(
     def pos_error(model: GazeNet, idx: np.ndarray) -> float:
         if len(idx) == 0:
             return float("nan")
-        return float(np.mean(np.linalg.norm(model.predict(pos_X[idx]) - pos_Y[idx], axis=1)))
+        return float(np.mean(np.linalg.norm(model.predict(pos_X[idx], eye) - pos_Y[idx], axis=1)))
 
     champ_err = pos_error(champion, test_idx)
     # Baseline: how well does simply guessing the training centroid do on the
@@ -121,22 +127,25 @@ def contrastive_finetune(
     baseline_err = float(np.mean(np.linalg.norm(pos_Y[test_idx] - centroid, axis=1)))
 
     tuned = champion.clone()
-    tuned.correction = type(tuned.correction)()      # fold any affine adjust into the net
-    xs, ys = tuned.x_scaler, tuned.y_scaler
-    Xtr = np.clip(xs.transform(pos_X[train_idx]), -6.0, 6.0)
+    lead = tuned.member(eye)                         # the network predict() uses
+    lead.correction = type(lead.correction)()        # fold any affine adjust into the net
+    cols = lead.inputs                               # a one-eye network reads only its columns
+    sel = (lambda A: A) if cols is None else (lambda A: A[:, cols])
+    xs, ys = lead.x_scaler, lead.y_scaler
+    Xtr = np.clip(xs.transform(sel(pos_X[train_idx])), -6.0, 6.0)
     Ytr = ys.transform(pos_Y[train_idx])
     wtr = pos_W[train_idx]
     wtr = wtr * (len(wtr) / max(wtr.sum(), 1e-9))
     have_neg = neg_X.shape[0] > 0 and neg_dir.shape[0] == neg_X.shape[0]
     if have_neg:
-        Xneg = np.clip(xs.transform(neg_X), -6.0, 6.0)
+        Xneg = np.clip(xs.transform(sel(neg_X)), -6.0, 6.0)
         # Arrow directions are in screen pixels; convert to the standardised
         # output space (divide by the per-axis target std) and renormalise.
         Dneg = neg_dir / np.maximum(ys.std, 1e-9)
         Dneg = Dneg / np.maximum(np.linalg.norm(Dneg, axis=1, keepdims=True), 1e-9)
 
     beta1, beta2, eps = 0.9, 0.999, 1e-8
-    for net in tuned.nets:
+    for net in lead.nets:
         # Frozen "wrong" predictions for the negatives (standardised output space).
         frozen = net.forward(Xneg) if have_neg else None
         m = np.zeros_like(net.theta)
@@ -179,12 +188,13 @@ def contrastive_finetune(
         return None, report
 
     # Refit on all positives (train + test) for the model we actually keep.
-    Xall = np.clip(xs.transform(pos_X), -6.0, 6.0)
+    Xall = np.clip(xs.transform(sel(pos_X)), -6.0, 6.0)
     Yall = ys.transform(pos_Y)
     wall = pos_W * (n_pos / max(pos_W.sum(), 1e-9))
     final = champion.clone()
-    final.correction = type(final.correction)()
-    for net in final.nets:
+    final_lead = final.member(eye)
+    final_lead.correction = type(final_lead.correction)()
+    for net in final_lead.nets:
         frozen = net.forward(Xneg) if have_neg else None
         m = np.zeros_like(net.theta)
         v = np.zeros_like(net.theta)
