@@ -769,7 +769,10 @@ class App {
     }
     this.state.calibrated = true;
     this.gaze.setActive(true);
-    if (r.ok) this.emit('calibrated', { hand: r.result });
+    if (r.ok) {
+      this.gaze.resetBias();            // the old click-learned offset belongs to the old pointing map
+      this.emit('calibrated', { hand: r.result });
+    }
     return r;
   }
 

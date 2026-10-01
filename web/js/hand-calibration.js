@@ -260,7 +260,7 @@ export class HandCalibrator {
           pinches++;
           sounds.point();
           this.setMeter(pinches / PINCHES);
-          this.say('Now pinch a few times', `${pinches} of ${PINCHES}`);
+          this.say('Now pinch a few times', `${Math.min(pinches, PINCHES)} of ${PINCHES}`);
         }
       },
     }).then(async () => {
@@ -299,7 +299,8 @@ export class HandCalibrator {
         this.say('Point at the circle and pinch', `Target ${i + 1} of ${PRACTICE.length}`);
         const [x, y] = PRACTICE[i];
         const target = h('button', { class: 'practice-target', type: 'button', 'aria-label': 'Practice target' });
-        Object.assign(target.style, { position: 'fixed', left: `${x * 100}%`, top: `${y * 100}%`, translate: '-50% -50%',
+        // Centred on the spot by the .practice-target animation (its transform).
+        Object.assign(target.style, { position: 'fixed', left: `${x * 100}%`, top: `${y * 100}%`,
           width: '120px', height: '120px', borderRadius: '50%' });
         this.ui.ov.append(target);
         const hit = await new Promise((resolve) => {
