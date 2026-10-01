@@ -111,6 +111,6 @@ export const NEXT = {
   this: ['is', 'one', 'hurts'],
   that: ['is', 'one', 'please', 'hurts'],
   not: ['now', 'yet', 'okay', 'good', 'sure'],
-  it's: ['too', 'okay', 'not', 'a'],
+  "it's": ['too', 'okay', 'not', 'a'],
   "i'm": ['not', 'feeling', 'tired', 'okay', 'cold', 'hot', 'fine', 'sorry'],
 };
