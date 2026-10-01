@@ -42,6 +42,16 @@ your eyes or with your hand.
   become training data, and a background job keeps whichever gaze network
   predicts you best. The Lab runs A/B experiments to tune your settings.
 
+### Glasses
+- Paralic notices glasses, and reflections on their lenses, on every frame.
+  Each person keeps one calibration made with glasses and one without. The
+  one that fits is loaded; if only the other exists, Paralic suggests a quick
+  adjust. Putting glasses on or taking them off mid-session brings up an offer
+  to switch calibration.
+- When a reflection hides one eye, the cursor follows the other eye without
+  jumping. Calibration leaves out frames hit by a passing reflection, and the
+  seating check and the dots say how to get rid of a lasting one.
+
 ### Someone else in view
 - With several people in front of the camera, only the person being followed
   controls Paralic. The camera view outlines "You" and "Ignored". When you look
