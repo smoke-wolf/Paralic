@@ -59,7 +59,8 @@ def _check_tracker(model_bytes: bytes) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="paralic", description="Eye-controlled website (webcam eye tracking).")
+    parser = argparse.ArgumentParser(prog="paralic",
+                                     description="Browse with your eyes or your hands (webcam tracking).")
     parser.add_argument("--host", default="127.0.0.1", help="interface to listen on (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8000, help="port (default: 8000, next free one if busy)")
     parser.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
@@ -98,24 +99,23 @@ def main(argv: list[str] | None = None) -> None:
     if model_error:
         log.error(model_error)
 
-    # Hand mode is optional: load its model best-effort and never block eye mode.
-    hand_tracker_factory = None
-    try:
+    def hand_loader():
+        """Hand mode's model, loaded (downloaded the first time) in the background:
+        eye mode never waits for it. Raises if hand mode cannot work."""
         hand_bytes = ensure_hand_model(args.hand_model).read_bytes()
         from .hands import HandTracker
 
-        HandTracker(hand_bytes).close()      # fail fast if MediaPipe can't start it
+        HandTracker(hand_bytes).close()      # fail early if MediaPipe can't start it
 
         def hand_tracker_factory():
             return HandTracker(hand_bytes)
-    except Exception as exc:  # ModelUnavailable or native MediaPipe problems
-        log.warning("Hand mode unavailable: %s", exc)
+        return hand_tracker_factory
 
     import uvicorn
 
     port = _pick_port(args.host, args.port)
     app = create_app(data_dir=args.data_dir, web_dir=DEFAULT_WEB_DIR,
-                     tracker_factory=tracker_factory, hand_tracker_factory=hand_tracker_factory,
+                     tracker_factory=tracker_factory, hand_loader=hand_loader,
                      model_error=model_error, allowed_hosts=_allowed_hosts(args.host))
 
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::", "::1") else args.host

@@ -8,9 +8,12 @@ Layout of the data directory::
       users/<id>/personal.json    personal blink / smoothing / magnet settings,
                                   model history, experiment decisions
       users/<id>/experiments.json raw A/B trial results
+      users/<id>/hand.json        Hand mode setup (pointing map, pinch thresholds)
+      users/<id>/faceprint/       face print (see faceprint.py)
 
 A single-user ``data/profile.json`` from older versions is migrated into the
-first person's folder automatically.
+first person's folder automatically, and so is the shared
+``data/hand_profile.json`` of the first Hand mode preview.
 """
 
 from __future__ import annotations
@@ -90,12 +93,21 @@ class UserStore:
     def _migrate_legacy(self) -> None:
         legacy = self.root / "profile.json"
         with self._lock:
-            if not legacy.is_file() or self._read_index()["users"]:
-                return
-            user = self.create("Person 1")
-            target = self.user_dir(user["id"]) / "profile.json"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(str(legacy), str(target))
+            if legacy.is_file() and not self._read_index()["users"]:
+                user = self.create("Person 1")
+                target = self.user_dir(user["id"]) / "profile.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(legacy), str(target))
+            hand = self.root / "hand_profile.json"
+            if hand.is_file():
+                # One shared hand setup: it becomes the active person's, unless they have their own.
+                user = self.ensure_active()
+                target = self.user_dir(user["id"]) / "hand.json"
+                doc = read_json(hand, None)
+                if not target.exists() and isinstance(doc, dict):
+                    write_json_atomic(target, {"version": 1, "updated": doc.get("updated", _now()),
+                                               "calibration": doc.get("calibration"), "summary": {}})
+                hand.unlink(missing_ok=True)
 
     def list(self) -> list[dict]:
         with self._lock:
@@ -103,7 +115,8 @@ class UserStore:
         out = []
         for u in doc["users"]:
             store = self.profile_store(u["id"])
-            out.append({**u, "calibrated": store.exists(), "face": self.face_store(u["id"]).exists()})
+            out.append({**u, "calibrated": store.exists(), "face": self.face_store(u["id"]).exists(),
+                        "hands": (self.user_dir(u["id"]) / "hand.json").is_file()})
         return out
 
     def active_id(self) -> Optional[str]:
@@ -210,3 +223,15 @@ class UserStore:
     def save_experiments(self, user_id: str, experiments: dict) -> None:
         with self.lock_for(user_id):
             write_json_atomic(self.user_dir(user_id) / "experiments.json", experiments)
+
+    def load_hand(self, user_id: str) -> Optional[dict]:
+        doc = read_json(self.user_dir(user_id) / "hand.json", None)
+        return doc if isinstance(doc, dict) else None
+
+    def save_hand(self, user_id: str, doc: dict) -> None:
+        with self.lock_for(user_id):
+            write_json_atomic(self.user_dir(user_id) / "hand.json", doc)
+
+    def delete_hand(self, user_id: str) -> None:
+        with self.lock_for(user_id):
+            (self.user_dir(user_id) / "hand.json").unlink(missing_ok=True)

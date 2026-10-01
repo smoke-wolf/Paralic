@@ -29,6 +29,16 @@ class ControlConfig:
     edge_margin_frac: float = 0.06
     scroll_lines: float = 2.0
     scroll_interval_s: float = 0.12
+    edge_scroll: bool = True          # hand mode scrolls with a pinch-drag instead
+    lost_reason: str = "No face detected - desktop control off."
+    scroll_px_per_line: float = 40.0
+
+
+def hand_config() -> ControlConfig:
+    """Hand mode: lowering the hand is normal (nothing moves or clicks without
+    it), so only a long absence turns desktop control off; pinch-drag scrolls."""
+    return ControlConfig(no_face_timeout_s=120.0, edge_scroll=False,
+                         lost_reason="No hand seen for two minutes - desktop control off.")
 
 
 @dataclass
@@ -89,7 +99,7 @@ class SystemController:
         if face:
             self._last_face_t = t
         elif self._last_face_t is not None and (t - self._last_face_t) > self.cfg.no_face_timeout_s:
-            self.disable("No face detected - desktop control off.")
+            self.disable(self.cfg.lost_reason)
             res.disabled_reason = "no-face"
             return res
 
@@ -114,7 +124,7 @@ class SystemController:
         res.moved = (x, y)
 
         # Edge scroll (needs a known screen height).
-        if bh > 0 and (t - self._last_scroll_t) >= self.cfg.scroll_interval_s:
+        if self.cfg.edge_scroll and bh > 0 and (t - self._last_scroll_t) >= self.cfg.scroll_interval_s:
             band = self.cfg.edge_margin_frac * bh
             if (y - by) <= band:
                 self.os.scroll(self.cfg.scroll_lines)
@@ -125,6 +135,17 @@ class SystemController:
                 res.scrolled = -self.cfg.scroll_lines
                 self._last_scroll_t = t
         return res
+
+    def scroll_by(self, dy_px: float) -> float:
+        """Pinch-drag scroll (``dy_px`` > 0 scrolls down); whole lines, the rest carried over."""
+        if not self.enabled:
+            return 0.0
+        self._scroll_rest = getattr(self, "_scroll_rest", 0.0) + float(dy_px) / self.cfg.scroll_px_per_line
+        lines = int(self._scroll_rest)
+        if lines:
+            self._scroll_rest -= lines
+            self.os.scroll(-lines)
+        return float(lines)
 
     def click(self, gaze: Optional[Sequence[float]]) -> bool:
         if self.enabled and gaze is not None:

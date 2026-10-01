@@ -21,6 +21,11 @@ the frames just before each practice-target hit or click become labelled
 fine-tuning samples; a background job periodically trains challenger networks
 on them and keeps whichever model predicts this person's recent gaze best.
 
+A session opened in *hand mode* runs the hand pipeline instead (see
+``hand_control.py``): the cursor follows the index fingertip and a pinch
+clicks. Everything else - the people, their settings, desktop control - is
+shared, so both ways of controlling Paralic are one application.
+
 Frames and commands are handled on one worker thread per connection (see
 ``server.py``); background jobs publish their results under ``_lock`` and
 notify the page through ``push``.
@@ -55,11 +60,12 @@ from .features import extract_features, face_lighting, mesh_overlay, overlay_poi
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
 from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, blink_signal, other_eye, wink_config
+from .hand_control import GESTURE_HELP as HAND_GESTURES, HandControl, HandSetupError
 from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, PersonalizationError, analyze_blinks,
                           analyze_experiment, experiment_arms, recommend_magnet, run_finetune, smoothing_params,
                           tune_smoothing)
 from .oscontrol import OSController
-from .system_control import SystemController
+from .system_control import SystemController, hand_config
 from .tracker import FaceTracker, decode_image
 from .users import UnknownUser, UserStore
 
@@ -156,7 +162,21 @@ _REPLY_TYPES = {
     "wink_calibration_finish": "wink_calibration_result",
     "blink_calibration_cancel": "blink_calibration_cancelled",
     "wink_calibration_cancel": "wink_calibration_cancelled",
+    "hand_calibration_start": "hand_calibration_started",
+    "hand_calibration_fit": "hand_calibration_result",
+    "hand_calibration_cancel": "hand_calibration_cancelled",
+    "hand_profile_load": "hand_profile",
+    "hand_profile_delete": "hand_profile",
+    "hand_settings": "hand_settings",
 }
+
+# Commands that need the face camera pipeline; a hand mode session answers them
+# with an error rather than doing something meaningless.
+_EYE_ONLY = frozenset({"calibration_start", "calibration_fit", "validation_finish", "label_event", "finetune",
+                       "blink_calibration_start", "blink_calibration_finish", "wink_calibration_start",
+                       "wink_calibration_finish", "face_recognize", "experiment_log"})
+_HAND_ONLY = frozenset({"hand_calibration_start", "hand_calibration_fit", "hand_calibration_cancel",
+                        "hand_settings"})
 
 
 class FrameFormatError(ValueError):
@@ -207,9 +227,12 @@ class _FrameRecord:
 
 
 class TrackerSession:
-    def __init__(self, tracker_factory: Callable[[], FaceTracker], users: UserStore,
+    def __init__(self, tracker_factory: Callable[[], Any], users: UserStore,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
-                 push: Optional[Callable[[dict], None]] = None):
+                 push: Optional[Callable[[dict], None]] = None, mode: str = "eyes"):
+        # ``tracker_factory`` makes a FaceTracker - or a HandTracker in hand mode.
+        self.mode = "hand" if mode == "hand" else "eyes"
+        self.hand: Optional[HandControl] = HandControl() if self.mode == "hand" else None
         self._tracker_factory = tracker_factory
         self._tracker: Optional[FaceTracker] = None
         self.users = users
@@ -248,7 +271,7 @@ class TrackerSession:
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         # System-wide ("control my whole computer") desktop cursor control. Off
         # by default; constructing the OSController is a safe no-op off macOS.
-        self.system = SystemController(OSController())
+        self.system = SystemController(OSController(), hand_config() if self.mode == "hand" else None)
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
         self.screen: Optional[dict] = None
@@ -266,6 +289,7 @@ class TrackerSession:
         self.user = users.ensure_active()
         self.personal = users.load_personal(self.user["id"])
         self._apply_effective()
+        self._load_hand()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -440,9 +464,12 @@ class TrackerSession:
         except Exception as exc:  # a MediaPipe failure should not end the session
             self._tracker_errors += 1
             if self._tracker_errors in (1, 10) or self._tracker_errors % 500 == 0:
-                log.exception("Face tracking failed (%d times)", self._tracker_errors)
+                log.exception("%s tracking failed (%d times)", "Hand" if self.hand else "Face",
+                              self._tracker_errors)
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
+        if self.hand is not None:
+            return self._hand_frame(t, frame_id, header, obs, started)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
         face_events: list[dict] = []
         features = raw = None
@@ -585,6 +612,28 @@ class TrackerSession:
                 out.append(self.system.state())
         return out
 
+    def _hand_frame(self, t: float, frame_id: Any, header: dict, obs, started: float) -> list[dict]:
+        """Hand mode: the fingertip is the cursor, a pinch clicks (see hand_control.py)."""
+        label = header.get("label") if isinstance(header.get("label"), dict) else None
+        fields, messages, events = self.hand.frame(t, frame_id, None if obs is None else obs.points_norm,
+                                                   label, self.screen)
+        msg: dict[str, Any] = {"type": "frame", "id": frame_id, **fields}
+        msg["ms"] = round((time.perf_counter() - started) * 1000.0, 1)
+        msg["fps"] = self._fps()
+        out = [msg, *messages]
+        if self.system.enabled:
+            g = None if fields["gaze"] is None else (float(fields["gaze"][0]), float(fields["gaze"][1]))
+            res = self.system.update(t, g, fields["face"])
+            if self.system.enabled and any(ev.type == "click" for ev in events):
+                at = next((m.get("at") for m in messages if m["type"] == "double_blink"), None)
+                self.system.click(tuple(at) if at else g)
+            for m in messages:
+                if m["type"] == "hand_scroll":
+                    self.system.scroll_by(m["dy"])
+            if res.disabled_reason:
+                out.append(self.system.state())
+        return out
+
     # -- gaze prediction ---------------------------------------------------------
     def _preferred_eye(self) -> str:
         """The network that leads while both eyes are open."""
@@ -674,9 +723,13 @@ class TrackerSession:
         if handler is None:
             return [{"type": "error", "error": f"unknown command {kind!r}"}]
         try:
+            if self.hand is not None and kind in _EYE_ONLY:
+                raise CalibrationError("This works with eye tracking - Paralic is in hand mode now")
+            if self.hand is None and kind in _HAND_ONLY:
+                raise CalibrationError("This works in hand mode - Paralic is using eye tracking now")
             with self._lock:
                 return handler(cmd)
-        except (CalibrationError, PersonalizationError) as exc:
+        except (CalibrationError, PersonalizationError, HandSetupError) as exc:
             error = str(exc)
         except UnknownUser:
             error = "Unknown person"
@@ -699,7 +752,8 @@ class TrackerSession:
         if isinstance(cmd.get("settings"), dict):
             self._apply_settings(cmd["settings"])
         return [{"type": "hello", "profile": self.profiles.summary(), "model": self.model is not None,
-                 "user": self.user, "users": self.users.list(), "personal": self.personal_view()}]
+                 "user": self.user, "users": self.users.list(), "personal": self.personal_view(),
+                 "mode": self.mode, **self._hand_view()}]
 
     def _cmd_settings(self, cmd: dict) -> list[dict]:
         self._apply_settings(cmd)
@@ -885,7 +939,7 @@ class TrackerSession:
 
     def _users_reply(self) -> list[dict]:
         return [{"type": "users", "ok": True, "users": self.users.list(), "user": self.user,
-                 "profile": self.profiles.summary(), "personal": self.personal_view()}]
+                 "profile": self.profiles.summary(), "personal": self.personal_view(), **self._hand_view()}]
 
     def _switch_user(self, user: dict) -> None:
         self._save_if_dirty()
@@ -906,6 +960,7 @@ class TrackerSession:
         self.blink.reset()
         self.wink.reset()
         self._apply_effective()
+        self._load_hand()
 
     def _cmd_users(self, cmd: dict) -> list[dict]:
         return self._users_reply()
@@ -937,6 +992,54 @@ class TrackerSession:
             self._unsaved_events = 0  # nothing left to save for them
             self._switch_user(self.users.ensure_active())
         return self._users_reply()
+
+    # -- hand mode -------------------------------------------------------------------------------
+    def _load_hand(self) -> None:
+        if self.hand is not None:
+            self.hand.load(self.users.load_hand(self.user["id"]))
+
+    def _hand_view(self) -> dict:
+        if self.hand is None:
+            return {}
+        return {"hand": self.hand.view(), "hand_gestures": HAND_GESTURES}
+
+    def _cmd_hand_calibration_start(self, cmd: dict) -> list[dict]:
+        info = self.hand.start_calibration(str(cmd.get("mode", "full")))
+        return [{"type": "hand_calibration_started", "ok": True, **info}]
+
+    def _cmd_hand_calibration_cancel(self, cmd: dict) -> list[dict]:
+        self.hand.cancel_calibration()
+        return [{"type": "hand_calibration_cancelled", "ok": True}]
+
+    def _cmd_hand_calibration_fit(self, cmd: dict) -> list[dict]:
+        try:
+            summary = self.hand.fit(self.screen)
+        except HandSetupError:
+            self.hand.cancel_calibration()
+            raise
+        saved = True
+        try:
+            self.users.save_hand(self.user["id"], self.hand.document(_now()))
+        except OSError:
+            log.warning("Could not save the hand setup", exc_info=True)
+            saved = False
+        return [{"type": "hand_calibration_result", "ok": True, "saved": saved, **summary}]
+
+    def _cmd_hand_profile_load(self, cmd: dict) -> list[dict]:
+        """Reload the person's saved hand setup (also answers in eye mode: whether one exists)."""
+        if self.hand is not None:
+            self._load_hand()
+            return [{"type": "hand_profile", "ok": True, **self._hand_view()}]
+        doc = self.users.load_hand(self.user["id"])
+        return [{"type": "hand_profile", "ok": True, "hand": (doc or {}).get("summary") if doc else None}]
+
+    def _cmd_hand_profile_delete(self, cmd: dict) -> list[dict]:
+        self.users.delete_hand(self.user["id"])
+        self._load_hand()
+        return [{"type": "hand_profile", "ok": True, "deleted": True, **self._hand_view()}]
+
+    def _cmd_hand_settings(self, cmd: dict) -> list[dict]:
+        return [{"type": "hand_settings", "ok": True, **self.hand.set_options(cmd)}]
 
     # -- face print ----------------------------------------------------------------------------
     def _face_enabled(self) -> bool:
