@@ -411,7 +411,7 @@ class App {
     const startBtn = h('button', { class: 'btn primary', type: 'button', id: 'start-btn' });
     startBtn.innerHTML = `${icon('eye')}<span>Start eye tracking</span>`;
     const handBtn = h('button', { class: 'btn', type: 'button', id: 'hand-btn' });
-    handBtn.innerHTML = `${icon('mouse')}<span>Use your hand</span>`;
+    handBtn.innerHTML = `${icon('grab')}<span>Use your hand</span>`;
     const handNote = h('p', { class: 'muted hand-note', hidden: true });
     const demoBtn = h('button', { class: 'btn', type: 'button', id: 'demo-btn' });
     demoBtn.innerHTML = `${icon('mouse')}<span>Try with a mouse</span>`;
@@ -423,7 +423,7 @@ class App {
       ['camera', 'Allow camera access when your browser asks. Video never leaves this computer.'],
       ['sun', 'Light your face evenly from the front and sit about an arm’s length from the screen.'],
       ['eye', 'With your eyes: look to move the cursor, blink twice to click, look at the arrows on the right to scroll.'],
-      ['mouse', 'With your hand: point with your index finger, pinch to click, pinch and move up or down to scroll.'],
+      ['grab', 'With your hand: point with your index finger, pinch to click, pinch and move up or down to scroll.'],
     ];
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'start-hero' },
