@@ -4,6 +4,7 @@
 
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
+import { sayHtml } from '../mode.js';
 import { speak, listVoices, setVoice, currentVoice } from '../speech.js';
 import { WORDS, STARTERS, NEXT } from '../data/words.js';
 import { PHRASE_GROUPS } from '../data/phrases.js';
@@ -72,8 +73,9 @@ export default {
     const renderDisplay = () => {
       display.innerHTML = '';
       if (!text) {
-        display.append(h('span', { class: 'placeholder' },
-          mode === 'keyboard' ? 'Look at letters and blink twice to type…' : 'Pick a phrase to say it out loud…'));
+        display.append(mode === 'keyboard'
+          ? h('span', { class: 'placeholder', html: sayHtml('Look at letters and blink twice to type…', 'Point at letters and pinch to type…') })
+          : h('span', { class: 'placeholder' }, 'Pick a phrase to say it out loud…'));
       } else {
         const shown = text.length > 70 ? `…${text.slice(-70)}` : text;
         display.append(document.createTextNode(shown));

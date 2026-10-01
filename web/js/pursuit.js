@@ -15,6 +15,7 @@
 // model.
 
 import { h } from './dom.js';
+import { say } from './mode.js';
 import { screenToClient } from './screen-space.js';
 import { speak, canSpeak } from './speech.js';
 import { sounds } from './sound.js';
@@ -63,9 +64,12 @@ export class PursuitTrainer {
     const text = h('div', { class: 'calib-text top' });
     ov.append(trail, dot, hud, text);
 
+    // In hand mode the "gaze" is the fingertip, so the same game trains pointing.
     const title = game ? 'Snake chase' : 'Follow the dot';
-    const sub = game ? 'Keep your eyes on the dot as it slithers. Stay locked on to score.'
-                     : 'Let your eyes glide along with the dot — smooth and relaxed.';
+    const sub = game ? say('Keep your eyes on the dot as it slithers. Stay locked on to score.',
+                           'Keep pointing at the dot as it slithers. Stay locked on to score.')
+                     : say('Let your eyes glide along with the dot — smooth and relaxed.',
+                           'Let your fingertip glide along with the dot — smooth and relaxed.');
     text.append(h('h2', {}, title), h('p', {}, sub));
     if (canSpeak()) speak(`${title}. ${sub}`);
     await this._sleep(1800);

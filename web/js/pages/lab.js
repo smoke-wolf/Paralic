@@ -1,5 +1,6 @@
 // Personalization Lab: everything Paralic has learned about the current
-// person's eyes, and blind A/B experiments that tune it further.
+// person's eyes, and blind A/B experiments that tune it further. In hand mode
+// it shows the person's hand setup instead (the eye cards are .eyes-only).
 //
 //   #/lab                    overview: gaze networks, blinks, winks, experiments
 //   #/lab/run/<experiment>   one round of blind, randomised target trials
@@ -11,6 +12,7 @@
 
 import { h, toast } from '../dom.js';
 import { icon } from '../icons.js';
+import { handMode, sayHtml } from '../mode.js';
 import { sounds } from '../sound.js';
 
 const TRIALS_PER_ARM = 4;
@@ -30,6 +32,30 @@ function px(v) {
   return v === null || v === undefined ? '–' : `${Math.round(v)} px`;
 }
 
+/** Hand mode: the person's hand setup (app.state.hand), with redo buttons. */
+function handCard(app) {
+  const s = app.state.hand;
+  const card = h('section', { class: 'card lab-card hands-only' },
+    h('h3', { html: `${icon('hand')}<span>Your hand setup</span>` }));
+  if (!s) {
+    card.append(
+      h('p', { class: 'muted' }, 'Not set up yet. The setup takes about a minute: hold up your open hand, point at a few dots, then pinch a few times.'),
+      h('div', { class: 'btn-row' }, button('Start hand setup', 'refresh', () => app.handSetup?.('full'), 'primary')));
+    return card;
+  }
+  card.append(
+    h('div', { class: 'lab-stats' },
+      stat(typeof s.pointing_error_px === 'number' ? `≈ ${Math.round(s.pointing_error_px)} px` : '–', 'pointing accuracy'),
+      stat(s.pinch_tuned ? 'Tuned' : 'Standard', 'pinch'),
+      stat(s.points ? String(s.points) : '–', 'pointing dots')),
+    h('p', { class: 'muted' }, 'The pointing map stretches the comfortable reach of your fingertip to the whole screen; its accuracy is checked on dots it did not learn from. ',
+      s.pinch_tuned ? 'The pinch is tuned to how far your own fingers open and close.' : 'The pinch uses standard thresholds: the full setup tunes it to your hand.'),
+    h('div', { class: 'btn-row' },
+      button('Re-point', 'crosshair', () => app.handSetup?.('point'), 'primary'),
+      button('Redo hand setup', 'refresh', () => app.handSetup?.('full'))));
+  return card;
+}
+
 function overview(el, app) {
   const view = app.state.personal;
   const name = app.state.person ? app.state.person.name : 'you';
@@ -37,18 +63,20 @@ function overview(el, app) {
     h('div', {},
       h('div', { class: 'eyebrow' }, 'Personalization Lab'),
       h('h1', {}, `Tuned for ${name}`),
-      h('p', { class: 'muted' }, 'Everything here was learned from your own eyes on this computer. Look at a button and blink twice to use it.')),
+      h('p', { class: 'muted', html: sayHtml('Everything here was learned from your own eyes on this computer. Look at a button and blink twice to use it.',
+        'Your hand setup is kept for you on this computer. Point at a button and pinch to use it.') })),
     h('div', { class: 'btn-row' }, button('Switch person', 'head', () => app.switchPerson())));
   el.append(head);
+  const hand = handCard(app);
   if (!view) {
-    el.append(h('p', { class: 'muted' }, 'Connecting to the eye tracker…'));
+    el.append(h('div', { class: 'lab-grid' }, hand), h('p', { class: 'muted eyes-only' }, 'Connecting to the eye tracker…'));
     return;
   }
 
   // -- the gaze networks ----------------------------------------------------------
   const m = view.model;
   const nets = view.eye_models;
-  const model = h('section', { class: 'card lab-card' },
+  const model = h('section', { class: 'card lab-card eyes-only' },
     h('h3', { html: `${icon('brain')}<span>Your gaze network</span>` }));
   if (!m) {
     model.append(h('p', { class: 'muted' }, app.state.simulated ? 'Demo mode uses the mouse instead of a gaze network.'
@@ -97,7 +125,7 @@ function overview(el, app) {
   const b = view.blink || {};
   const bp = view.blink_profile;
   const signals = { both: 'both eyes must close', mean: 'average of both eyes', left: 'left eye', right: 'right eye' };
-  const blinks = h('section', { class: 'card lab-card' },
+  const blinks = h('section', { class: 'card lab-card eyes-only' },
     h('h3', { html: `${icon('blink')}<span>Blinks</span>` }),
     h('div', { class: 'lab-stats' },
       stat(b.personal ? 'Personal' : 'Standard', 'thresholds'),
@@ -116,7 +144,7 @@ function overview(el, app) {
     return h('li', {}, h('b', {}, eye === 'left' ? 'Left eye: ' : 'Right eye: '),
       !on ? `ignored${r && !r.ok ? ` (${r.reason})` : ''}` : `${mapping}${r && r.ok ? ' · tested ✓' : ''}`);
   };
-  const winks = h('section', { class: 'card lab-card' },
+  const winks = h('section', { class: 'card lab-card eyes-only' },
     h('h3', { html: `${icon('wink')}<span>Winks and gestures</span>` }),
     h('ul', { class: 'lab-list' }, eyeLine('left'), eyeLine('right'),
       h('li', {}, h('b', {}, 'Both eyes ~1 s: '), { off: 'nothing', menu: 'menu', grab: 'pick up / drop', click: 'click' }[g.long_close] || '–'),
@@ -126,7 +154,7 @@ function overview(el, app) {
       h('a', { class: 'btn', href: '#/settings', html: `${icon('sliders')}<span>Gesture settings</span>` })));
 
   // -- experiments ----------------------------------------------------------------------
-  const experiments = h('section', { class: 'card lab-card lab-wide' },
+  const experiments = h('section', { class: 'card lab-card lab-wide eyes-only' },
     h('h3', { html: `${icon('flask')}<span>A/B experiments</span>` }),
     h('p', { class: 'muted' }, 'Each round is 8–12 targets. Every target secretly uses one variant; you just pop them. When one variant is clearly faster for you (permutation test), it becomes your default.'));
   const list = h('div', { class: 'lab-experiments' });
@@ -149,7 +177,7 @@ function overview(el, app) {
 
   // -- face print -----------------------------------------------------------------------
   const fp = view.faceprint || { enabled: false, samples: 0, ready: false };
-  const face = h('section', { class: 'card lab-card' },
+  const face = h('section', { class: 'card lab-card eyes-only' },
     h('h3', { html: `${icon('head')}<span>Face print</span>` }));
   if (app.state.simulated) {
     face.append(h('p', { class: 'muted' }, 'Demo mode has no camera, so no face print.'));
@@ -164,9 +192,11 @@ function overview(el, app) {
         : 'Paralic is collecting a few different views of your face while you use it. Kept on this computer only.'));
     const gallery = h('div', { class: 'face-gallery' });
     face.append(gallery);
-    app.tracker.request({ type: 'faceprint_faces' }, 'faceprint_faces', 8000).then((r) => {
-      for (const f of (r.faces || []).slice(-24)) gallery.append(h('img', { src: f.src, alt: 'A kept view of your face' }));
-    }).catch(() => {});
+    if (!handMode()) {
+      app.tracker.request({ type: 'faceprint_faces' }, 'faceprint_faces', 8000).then((r) => {
+        for (const f of (r.faces || []).slice(-24)) gallery.append(h('img', { src: f.src, alt: 'A kept view of your face' }));
+      }).catch(() => {});
+    }
     face.append(h('div', { class: 'btn-row' }, button('Forget my face', 'trash', async () => {
       try {
         await app.tracker.request({ type: 'faceprint_forget' }, 'personal', 8000);
@@ -177,7 +207,7 @@ function overview(el, app) {
     }, 'danger')));
   }
 
-  el.append(h('div', { class: 'lab-grid' }, model, blinks, winks, face, experiments));
+  el.append(h('div', { class: 'lab-grid' }, hand, model, blinks, winks, face, experiments));
 }
 
 function button(label, ic, onClick, cls = '') {
@@ -289,6 +319,14 @@ function runner(el, app, experiment) {
   });
 
   const start = async () => {
+    if (handMode()) {
+      // The experiments compare eye-tracking settings; a hand session cannot log them.
+      center(h('h2', {}, 'Experiments tune eye control'),
+        h('p', { class: 'muted', style: { maxWidth: '50ch', margin: '0 auto 24px' } },
+          'They compare settings of the eye tracking, so they run while you use your eyes. To try one, choose Eyes in Settings → Control with.'),
+        h('div', { class: 'btn-row' }, h('a', { class: 'btn primary', href: '#/lab', html: `${icon('back')}<span>Back to the Lab</span>` })));
+      return;
+    }
     let plan;
     try {
       plan = await app.tracker.request({ type: 'experiment_plan', experiment }, 'experiment_plan', 8000);
@@ -365,7 +403,7 @@ export default {
     };
     overview(el, app);
     app.tracker?.send({ type: 'personal_get' });
-    const offs = [app.on('personal', rerender), app.on('people', rerender)];
+    const offs = [app.on('personal', rerender), app.on('people', rerender), app.on('hand', rerender)];
     return () => offs.forEach((off) => off());
   },
 };

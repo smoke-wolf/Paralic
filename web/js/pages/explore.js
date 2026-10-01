@@ -1,5 +1,6 @@
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
+import { sayHtml } from '../mode.js';
 import { PLANETS } from '../data/planets.js';
 
 function planetEl(p, big = false) {
@@ -15,7 +16,7 @@ function renderList(el) {
       h('div', {},
         h('div', { class: 'eyebrow' }, 'Explore'),
         h('h1', {}, 'The Solar System'),
-        h('p', { class: 'muted' }, 'Look at a planet and blink twice to visit it.'))),
+        h('p', { class: 'muted', html: sayHtml('Look at a planet and blink twice to visit it.', 'Point at a planet and pinch to visit it.') }))),
     h('div', { class: 'grid cols-4' },
       PLANETS.map((p) => h('a', { class: 'card planet-card', href: `#/explore/${p.id}` },
         planetEl(p),
