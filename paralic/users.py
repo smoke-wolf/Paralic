@@ -213,6 +213,14 @@ class UserStore:
         without them - or before Paralic noticed glasses)."""
         return ProfileStore(self.user_dir(user_id) / ("profile-glasses.json" if glasses else "profile.json"))
 
+    def profile_summary(self, user_id: str) -> Optional[dict]:
+        """The saved calibration's summary: the one made without glasses, else the one with."""
+        for glasses in (False, True):
+            summary = self.profile_store(user_id, glasses=glasses).summary()
+            if summary is not None:
+                return summary
+        return None
+
     def load_personal(self, user_id: str) -> dict:
         return read_json(self.user_dir(user_id) / "personal.json", {})
 

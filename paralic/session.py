@@ -1002,7 +1002,7 @@ class TrackerSession:
             self.screen = {k: screen.get(k) for k in ("w", "h", "dpr")}
         if isinstance(cmd.get("settings"), dict):
             self._apply_settings(cmd["settings"])
-        return [{"type": "hello", "profile": self.profiles.summary(), "model": self.model is not None,
+        return [{"type": "hello", "profile": self.users.profile_summary(self.user["id"]), "model": self.model is not None,
                  "user": self.user, "users": self.users.list(), "personal": self.personal_view(),
                  "mode": self.mode, **self._hand_view()}]
 
@@ -1228,7 +1228,8 @@ class TrackerSession:
 
     def _users_reply(self) -> list[dict]:
         return [{"type": "users", "ok": True, "users": self.users.list(), "user": self.user,
-                 "profile": self.profiles.summary(), "personal": self.personal_view(), **self._hand_view()}]
+                 "profile": self.users.profile_summary(self.user["id"]), "personal": self.personal_view(),
+                 **self._hand_view()}]
 
     def _switch_user(self, user: dict) -> None:
         self._save_if_dirty()
@@ -1532,6 +1533,11 @@ class TrackerSession:
             return skip("learning is off")
         if self.model is None:
             return skip("not calibrated")
+        made_with = self.profile_meta.get("glasses")
+        if made_with is not None and self.glasses.settled is not None and self.glasses.settled != made_with:
+            # The calibration in use was made with the glasses the other way:
+            # don't teach it how the eyes look now (that belongs in the other one).
+            return skip("the calibration in use was made with the glasses the other way")
         idx = self._find_record(cmd.get("pre_frame"))
         if idx is None:
             return skip("frame not found")

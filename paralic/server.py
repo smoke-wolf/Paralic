@@ -153,7 +153,7 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             "error": model_error,
             "hands": hands.status(),
             "hands_error": hands.error,
-            "profile": users.profile_store(active).summary() if active else None,
+            "profile": users.profile_summary(active) if active else None,
             "users": len(users.list()),
             "recording": record_all,
         })

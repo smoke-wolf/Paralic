@@ -462,3 +462,31 @@ def test_no_announcement_before_a_calibration_is_in_use_or_while_calibrating(env
     label = {"x": 960, "y": 540, "kind": "adjust", "pt": 0}
     msgs = [m for _ in range(150) for m in frame(label=label)]
     assert not changes(msgs)
+
+
+def test_a_calibration_with_glasses_only_counts_as_saved(env):
+    """Someone who only calibrated with glasses has a saved calibration (the
+    summaries the page and /api/status show are not empty)."""
+    session, scene, frame, calibrate, wear = env
+    wear(True, 1.0)
+    calibrate()
+    summary = session.users.profile_summary(session.user["id"])
+    assert summary is not None and summary["glasses"] is True
+    assert session.handle_command({"type": "hello"})[0]["profile"]["glasses"] is True
+
+
+def test_clicks_do_not_teach_a_calibration_made_with_the_glasses_the_other_way(env):
+    session, scene, frame, calibrate, wear = env
+    calibrate()                               # without glasses
+
+    def look():
+        """Rest the eyes on a target, then 'pop' it: the frame just before is the pre-frame."""
+        for _ in range(12):
+            pre = frame(700, 500)[0]["id"]
+        return {"type": "label_event", "kind": "practice", "pre_frame": pre, "target": [700, 500]}
+
+    reply = session.handle_command(look())[0]
+    assert reply["stored"] is True, reply
+    wear(True)                                # glasses on: the loaded calibration does not fit
+    reply = session.handle_command(look())[0]
+    assert reply["stored"] is False and "glasses" in reply["reason"]
