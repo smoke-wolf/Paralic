@@ -585,15 +585,16 @@ def test_camera_flow(browser, tmp_path):
         # limit, the accuracy comes out poor and the improving rounds run as well.
         pg.wait_for_selector(".results", timeout=360000)
         # The results screen must be usable with the eyes: gaze cursor on and live.
-        pg.wait_for_timeout(800)
-        assert pg.evaluate("window.paralic.gaze.active && !window.paralic.gaze.suspended")
-        assert pg.evaluate("!document.querySelector('#gaze-cursor').hidden")
+        pg.wait_for_function("window.paralic.gaze.active && !window.paralic.gaze.suspended "
+                             "&& !document.querySelector('#gaze-cursor').hidden", timeout=15000)
         pg.click('[data-choice="go"]')
-        pg.wait_for_timeout(1500)
-        assert pg.evaluate("!document.querySelector('#gaze-cursor').hidden")
-        assert pg.evaluate("window.paralic.state.calibrated")
-        # Calibrating as themselves started the person's face print.
-        assert pg.evaluate("window.paralic.state.personal.faceprint.samples") >= 1
+        pg.wait_for_function("window.paralic.state.calibrated && !document.querySelector('#gaze-cursor').hidden",
+                             timeout=15000)
+        # Calibrating as themselves started the person's face print (asked afresh:
+        # the page only hears of it with the next reply).
+        samples = pg.evaluate("""() => window.paralic.tracker.request({type: 'personal_get'}, 'personal', 10000)
+            .then((p) => ((p.personal || p).faceprint || {}).samples || 0)""")
+        assert samples >= 1
         assert errors == []
     finally:
         ctx.close()

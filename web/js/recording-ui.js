@@ -5,9 +5,11 @@
 // pipeline made of them, commands and events, and camera images go into a
 // folder on this computer (data/recordings/). While it records, the button
 // pulses red and shows for how long and how much - as the server reports it.
-// It is a helper's control, not a gaze target: a stray double blink never
-// starts or stops a recording. With `python -m paralic --record` every session
-// records from the start, and the button shows that too.
+// It can be used with the eyes (or a hand) like any button, but it asks first
+// - "Record this session?" / "Stop recording?" - so a stray double blink never
+// starts or stops a recording; Shift+R switches at once. With
+// `python -m paralic --record` every session records from the start, and the
+// button shows that too.
 
 import { h, toast } from './dom.js';
 import { say } from './mode.js';
@@ -32,10 +34,10 @@ class RecordingUi {
     this.polledAt = 0;
     addStyle();
     this.info = h('small', { class: 'rec-info' });
-    this.button = h('button', { class: 'nav-btn rec-btn gaze-ignore', type: 'button', 'aria-pressed': 'false' },
+    this.button = h('button', { class: 'nav-btn rec-btn', type: 'button', 'aria-pressed': 'false', 'data-no-learn': '' },
       h('span', { class: 'rec-label' }, h('span', { class: 'rec-dot', 'aria-hidden': 'true' }), h('span', {}, 'Rec')),
       this.info);
-    this.button.addEventListener('click', () => this.toggle());
+    this.button.addEventListener('click', () => this.confirm());
     const bar = document.getElementById('topbar') || document.querySelector('.topbar');
     if (bar) bar.insertBefore(this.button, bar.querySelector('#pause-btn'));
     this.offs = [
@@ -62,6 +64,28 @@ class RecordingUi {
 
   toggle() {
     if (!this.pending) this.set(!this.status.on);
+  }
+
+  /** Ask before starting or stopping (the button is a gaze target). */
+  confirm() {
+    if (this.pending) return;
+    document.querySelector('.rec-confirm')?.remove();
+    const on = !this.status.on;
+    const yes = h('button', { class: 'btn primary', type: 'button' }, on ? 'Start recording' : 'Stop recording');
+    const no = h('button', { class: 'btn', type: 'button' }, on ? 'Cancel' : 'Keep recording');
+    const box = h('div', { class: 'face-banner rec-confirm', role: 'dialog', 'aria-label': 'Recording' },
+      h('span', {}, on ? 'Record this session? Camera images are included.' : 'Stop recording?'), yes, no);
+    document.body.append(box);
+    const close = () => {
+      clearTimeout(timer);
+      box.remove();
+    };
+    const timer = setTimeout(close, 15000);
+    yes.addEventListener('click', () => {
+      close();
+      this.set(on);
+    });
+    no.addEventListener('click', close);
   }
 
   set(on) {

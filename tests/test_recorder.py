@@ -589,7 +589,7 @@ def test_the_rec_button_and_shift_r_record_the_session(tmp_path):
             page.click("#start-btn")
             page.wait_for_function("window.paralic.tracker && window.paralic.tracker.connected")
             button = page.locator("#topbar .rec-btn")
-            assert button.count() == 1 and "gaze-ignore" in button.get_attribute("class")
+            assert button.count() == 1 and "gaze-ignore" not in button.get_attribute("class")   # usable by gaze
             page.keyboard.press("Shift+R")
             page.wait_for_selector(".rec-btn.recording")
             assert "camera images included" in page.locator(".toast").first.text_content()
@@ -597,7 +597,9 @@ def test_the_rec_button_and_shift_r_record_the_session(tmp_path):
             wait_until(lambda: len(list((tmp_path / "recordings").glob("*/video/*.jpg"))) >= 2)
             # The camera check is still on screen: close it to reach the button, as a helper would.
             page.evaluate("document.querySelector('#overlay-root').innerHTML = ''; window.paralic.appEl.inert = false")
-            button.click()
+            button.click()                    # it asks first (a stray double blink must not stop it)
+            assert page.locator(".rec-btn.recording").count() == 1
+            page.locator(".rec-confirm .btn", has_text="Stop recording").click()
             page.wait_for_selector(".rec-btn:not(.recording):not(.pending)")
             page.wait_for_function(
                 "[...document.querySelectorAll('.toast')].some(t => t.textContent.includes('saved'))")
