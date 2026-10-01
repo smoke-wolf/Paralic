@@ -1,4 +1,4 @@
-import { h, toast } from '../dom.js';
+import { esc, h, toast } from '../dom.js';
 import { icon } from '../icons.js';
 import { getSettings, updateSettings, DEFAULTS } from '../settings.js';
 
@@ -139,7 +139,7 @@ export default {
 
     // -- eye gestures (per person) -------------------------------------------------
     const person = app.state.person ? app.state.person.name : null;
-    el.append(h('h2', { class: 'section-title', html: `${icon('wink')}<span>Eye gestures${person ? ` for ${person}` : ''}</span>` }));
+    el.append(h('h2', { class: 'section-title', html: `${icon('wink')}<span>Eye gestures${person ? ` for ${esc(person)}` : ''}</span>` }));
     const gestureRows = [];
     for (const g of GESTURE_GROUPS) {
       const opts = h('div', { class: 'options', role: 'radiogroup', 'aria-label': g.title });

@@ -30,6 +30,7 @@ laptop CPU and needs no deep-learning framework.
 
 from __future__ import annotations
 
+import copy
 import math
 from dataclasses import dataclass, field
 from typing import Optional, Sequence
@@ -501,7 +502,7 @@ class GazeNet:
             y_scaler=Scaler.from_dict(d["y_scaler"]),
             nets=[MLPRegressor.from_dict(n) for n in d["nets"]],
             correction=AffineCorrection.from_dict(d.get("correction")),
-            meta=d.get("meta", {}),
+            meta=copy.deepcopy(d.get("meta", {})),   # a clone must not share the original's meta
             inputs=d.get("inputs"),
             eyes={k: cls.from_dict(v) for k, v in (d.get("eyes") or {}).items() if k in ("left", "right")},
         )

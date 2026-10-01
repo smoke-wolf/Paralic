@@ -25,7 +25,7 @@
 //   data-no-longpress       holding still here does not open the menu (e.g. a canvas)
 // and they may add menu items by listening for "gazemenu" (detail.items.push({...})).
 
-import { $$, clamp, h, isVisible } from './dom.js';
+import { $$, clamp, esc, h, isVisible } from './dom.js';
 import { icon } from './icons.js';
 import { sounds } from './sound.js';
 import { speak } from './speech.js';
@@ -63,8 +63,14 @@ export class GestureController {
       tracker.on('wink', (m) => this.onQuickWink(m)),
       tracker.on('long_close_ready', () => this.ready() && sounds.firstBlink()),
       tracker.on('long_close', (m) => this.onLongClose(m)),
+      // A lost "wink_end" (e.g. the connection dropped mid-drag) must not leave
+      // anything held; neither may a new page.
+      tracker.on('connection', ({ connected }) => { if (!connected) this.cancelAll(); }),
       this.gaze.onDoubleBlinkFirst((m, entry) => this.onDoubleBlink(m, entry)),
     ];
+    const onRoute = () => this.cancelAll();
+    window.addEventListener('hashchange', onRoute);
+    this.offs.push(() => window.removeEventListener('hashchange', onRoute));
     this._raf = requestAnimationFrame((t) => this.loop(t));
   }
 
@@ -100,6 +106,7 @@ export class GestureController {
 
   // -- holding one eye closed ----------------------------------------------------------------
   onWinkStart(msg) {
+    if (this.press) this.endPress(true);  // its wink_end never came
     if (!this.ready()) return;
     const mapping = this.settings[`${msg.eye}_hold`];
     if (mapping === 'off') return;
@@ -169,8 +176,11 @@ export class GestureController {
     }
     if (p.pointerTarget) firePointer(p.pointerTarget, cancelled ? 'pointercancel' : 'pointerup', point);
     if (cancelled || p.moved) return;
-    // Pressed and released without moving: a click on what was highlighted.
+    // Pressed and released without moving: a click on what was highlighted -
+    // unless the press landed on a drawing surface (a canvas) outside it.
     const target = p.el || (p.item && p.item.matches(TARGET_SELECTOR) ? p.item : null);
+    const surface = p.pointerTarget && p.pointerTarget.closest('canvas, [data-no-longpress]');
+    if (surface && !(target && target.contains(surface))) return;
     if (target || !p.pointerTarget) this.gaze.activate(target, p.point, null, null, 'wink');
   }
 
@@ -414,7 +424,7 @@ class GazeMenu {
     const list = h('div', { class: 'gaze-menu-items' });
     for (const it of items) {
       const b = h('button', { class: `gaze-menu-item ${it.id === 'cancel' ? 'cancel' : ''}`, type: 'button',
-        'data-menu': it.id, html: `${icon(it.icon || 'check')}<span>${it.label}</span>` });
+        'data-menu': it.id, html: `${icon(it.icon || 'check')}<span>${esc(it.label)}</span>` });
       b.addEventListener('click', () => {
         this.close();
         try {

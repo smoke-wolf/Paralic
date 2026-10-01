@@ -1,7 +1,7 @@
 // Paralic — application bootstrap and top-level flows (start screen, face
 // check, calibration, pause, navigation).
 
-import { $, $$, h, toast } from './dom.js';
+import { $, $$, esc, h, toast } from './dom.js';
 import { clientToScreen } from './screen-space.js';
 import { icon } from './icons.js';
 import { EyeTracker, SimTracker } from './tracker.js';
@@ -84,7 +84,7 @@ class App {
       const row = h('div', { class: 'choice-row', style: rowStyle || {} });
       for (const c of choices) {
         const b = h('button', { class: `choice ${c.primary ? 'primary' : ''}`, type: 'button', 'data-choice': c.id });
-        b.innerHTML = `${icon(c.icon || 'check')}<span>${c.label}</span>${c.sub ? `<small>${c.sub}</small>` : ''}`;
+        b.innerHTML = `${icon(c.icon || 'check')}<span>${esc(c.label)}</span>${c.sub ? `<small>${esc(c.sub)}</small>` : ''}`;
         b.addEventListener('click', () => {
           wrap.remove();
           resolve(c.id);
@@ -107,7 +107,7 @@ class App {
       const grid = h('div', { class: 'scan-grid' });
       const buttons = choices.map((c) => {
         const b = h('button', { class: 'choice', type: 'button', 'data-choice': c.id });
-        b.innerHTML = `${icon(c.icon || 'head')}<span>${c.label}</span>${c.sub ? `<small>${c.sub}</small>` : ''}`;
+        b.innerHTML = `${icon(c.icon || 'head')}<span>${esc(c.label)}</span>${c.sub ? `<small>${esc(c.sub)}</small>` : ''}`;
         b.addEventListener('click', () => finish(c.id));
         grid.append(b);
         return b;
@@ -508,7 +508,7 @@ class App {
       'Waiting for two quick blinks…');
     const name = this.state.person ? this.state.person.name : null;
     const switchBtn = h('button', { class: 'btn', type: 'button' });
-    switchBtn.innerHTML = `${icon('head')}<span>${name ? `Not ${name}?` : 'Switch person'}</span>`;
+    switchBtn.innerHTML = `${icon('head')}<span>${name ? `Not ${esc(name)}?` : 'Switch person'}</span>`;
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'face-check' },
         preview.el,

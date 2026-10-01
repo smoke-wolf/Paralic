@@ -287,3 +287,19 @@ def test_blink_analysis_handles_an_eye_that_hardly_closes():
     # ...and their lopsided blinks are not mistaken for winks.
     w = WinkDetector(wink_config({"blink": res}))
     assert run(w, [(l, r) for _, l, r in usage]) == []
+
+
+def test_a_wink_that_was_only_starting_is_forgotten_when_the_face_is_lost():
+    d = WinkDetector()
+    run(d, open_eyes(60))
+    d.update(2.0, 0.85, 0.2)                     # one closing frame, then the face is gone for 3 s
+    assert d.update_missing(2.5) == [] and d.update_missing(5.0) == []
+    ev = run(d, [(0.85, 0.2)] * 3 + open_eyes(20), t0=5.03)
+    assert all(e[1] != "wink_start" for e in ev)
+
+
+def test_long_close_once_announced_is_not_a_blink():
+    d = BlinkDetector(BlinkConfig(long_close_ms=600, max_closed_ms=700))
+    ev = feed(d, [0.2] * 60 + [0.95] * 20 + [0.2] * 20)   # ~0.67 s, deep
+    kinds = [e[0] for e in ev]
+    assert kinds == ["long_close_ready", "long_close"]

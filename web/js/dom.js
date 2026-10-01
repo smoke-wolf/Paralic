@@ -4,6 +4,11 @@ export const $ = (sel, root = document) => root.querySelector(sel);
 export const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
 export const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+
+/** Escape text for use inside an HTML template (names typed by people, etc.). */
+export function esc(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
 export const lerp = (a, b, t) => a + (b - a) * t;
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

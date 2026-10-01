@@ -317,6 +317,52 @@ def test_long_close_menu_and_drag_lock(page):
     page.wait_for_timeout(300)
 
 
+def test_a_drag_cannot_get_stuck_when_the_connection_drops(page):
+    page.evaluate("location.hash = '#/arrange'")
+    page.wait_for_selector(".arrange-tray .arrange-card")
+    look_at(page, '.arrange-tray .arrange-card[data-planet="mars"]')
+    page.keyboard.down("q")
+    page.wait_for_timeout(600)
+    x, y = center_of(page, '.arrange-slot[data-slot="3"]')
+    page.mouse.move(x, y, steps=8)
+    page.wait_for_timeout(300)
+    assert page.locator(".drag-ghost").count() == 1
+    # The server never sends wink_end (e.g. it restarted): the drag is put back.
+    page.evaluate("window.paralic.tracker.emit('connection', {connected: false})")
+    page.wait_for_timeout(400)
+    assert page.locator(".drag-ghost").count() == 0
+    assert not page.evaluate("document.body.classList.contains('gaze-dragging')")
+    assert page.evaluate("window.paralic.gaze.selector") == "a[href], button:not([disabled]), [data-gaze]"
+    page.keyboard.up("q")
+
+
+def test_a_still_press_on_the_canvas_does_not_click_a_nearby_button(page):
+    page.evaluate("location.hash = '#/draw'")
+    page.wait_for_selector(".draw-canvas")
+    clear = page.locator(".draw-tools .btn").bounding_box()
+    canvas = page.locator(".draw-canvas").bounding_box()
+    # On the canvas, just below the Clear button (the magnet highlights the button).
+    page.mouse.move(clear["x"] + clear["width"] / 2, canvas["y"] + 25, steps=6)
+    page.wait_for_timeout(400)
+    page.keyboard.down("e")
+    page.wait_for_timeout(550)
+    page.keyboard.up("e")
+    page.wait_for_timeout(300)
+    assert page.evaluate("document.querySelector('.draw-canvas').dataset.strokes") == "1"   # drew, not cleared
+
+
+def test_names_are_shown_as_text_not_html(page):
+    page.evaluate("""window.paralic.tracker.request(
+        {type: 'user_rename', name: '<img src=x onerror=window.__x=1>'}, 'users')""")
+    page.wait_for_timeout(300)
+    page.evaluate("location.hash = '#/settings'")
+    page.wait_for_timeout(500)
+    assert page.evaluate("window.__x") is None
+    assert "<img src=x" in page.locator(".section-title").first.text_content()
+    page.evaluate("window.paralic.tracker.request({type: 'user_rename', name: 'Person 1'}, 'users')")
+    page.wait_for_timeout(200)
+
+
 def test_lab_shows_personalisation_and_runs_an_experiment(page):
     page.evaluate("location.hash = '#/lab'")
     page.wait_for_selector(".lab-grid")

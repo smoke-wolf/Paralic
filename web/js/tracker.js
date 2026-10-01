@@ -283,14 +283,22 @@ export class SimTracker extends Channel {
       else this.closeOne(which);
     };
     this._onKeyUp = (e) => {
-      const which = key(e);
-      if (!which) return;
+      // Always release (even with a modifier held or focus in a field), or the
+      // "eye" would stay closed.
+      const which = { b: 'both', q: 'left', e: 'right' }[String(e.key).toLowerCase()];
       if (which === 'both') this.openBoth();
-      else this.openOne(which);
+      else if (which) this.openOne(which);
     };
+    this._onBlur = () => {
+      this.openBoth();
+      if (this.wink) this.openOne(this.wink.eye);
+    };
+    this._onVisibility = () => { if (document.hidden) this._onBlur(); };
     window.addEventListener('pointermove', this._onMove);
     window.addEventListener('keydown', this._onKey);
     window.addEventListener('keyup', this._onKeyUp);
+    window.addEventListener('blur', this._onBlur);
+    document.addEventListener('visibilitychange', this._onVisibility);
     this.timer = setInterval(() => this.tick(), 33);
     this.connect();
   }
@@ -301,6 +309,8 @@ export class SimTracker extends Channel {
     window.removeEventListener('pointermove', this._onMove);
     window.removeEventListener('keydown', this._onKey);
     window.removeEventListener('keyup', this._onKeyUp);
+    window.removeEventListener('blur', this._onBlur);
+    document.removeEventListener('visibilitychange', this._onVisibility);
     if (this.ws) this.ws.close();
   }
 

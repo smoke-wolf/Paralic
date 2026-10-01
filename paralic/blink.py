@@ -131,10 +131,16 @@ class BlinkDetector:
         self._last_seen = None
         self._closure = 0.0
 
-    def cancel(self) -> None:
-        """Forget the closure in progress and any blink waiting for a partner (no events)."""
+    def cancel(self) -> bool:
+        """Forget the closure in progress and any blink waiting for a partner.
+
+        Returns True if a pending blink was dropped (the caller may tell the
+        page that the first blink of a double blink expired).
+        """
+        dropped = self._pending is not None
         self._closed = False
         self._pending = None
+        return dropped
 
     # -- updates ------------------------------------------------------------
     def update_missing(self, t: float) -> list[BlinkEvent]:
@@ -193,11 +199,13 @@ class BlinkDetector:
     # -- internals ----------------------------------------------------------
     def _on_reopen(self, t: float, duration_ms: float) -> list[BlinkEvent]:
         cfg = self.config
-        if not (cfg.min_closed_ms <= duration_ms <= cfg.max_closed_ms):
+        # Once "long close" was announced, this closure is never a blink.
+        if self._ready_sent or not (cfg.min_closed_ms <= duration_ms <= cfg.max_closed_ms):
             expired = self._pending is not None
             self._pending = None
             events = [BlinkEvent("blink_expired", t)] if expired else []
-            if cfg.long_close_ms <= duration_ms <= cfg.long_close_max_ms and self._mostly_deep():
+            long_enough = self._ready_sent or duration_ms >= cfg.long_close_ms
+            if long_enough and duration_ms <= cfg.long_close_max_ms and self._mostly_deep():
                 events.append(BlinkEvent("long_close", t, first_start=self._closed_since, duration_ms=duration_ms))
             return events
 

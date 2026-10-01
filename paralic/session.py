@@ -125,6 +125,8 @@ _REPLY_TYPES = {
     "gestures_set": "personal",
     "wink_calibration_start": "wink_calibration_started",
     "wink_calibration_finish": "wink_calibration_result",
+    "blink_calibration_cancel": "blink_calibration_cancelled",
+    "wink_calibration_cancel": "wink_calibration_cancelled",
 }
 
 
@@ -292,7 +294,8 @@ class TrackerSession:
         cfg.max_closed_ms = e["max_closed_ms"]
         cfg.double_gap_ms = e["double_gap_ms"]
         cfg.deep_rise = e["deep_rise"]
-        cfg.long_close_ms = float(e["gestures"]["long_close_ms"])
+        # A long close must be clearly longer than this person's longest blink.
+        cfg.long_close_ms = max(float(e["gestures"]["long_close_ms"]), cfg.max_closed_ms + 200.0)
         self.blink_mode = e["blink_signal"]
         self.wink.config = wink_config(self.personal, e["gestures"])
 
@@ -406,22 +409,33 @@ class TrackerSession:
                 self._start_wink_tracking(t, winking)
             elif winking is None:
                 self._wink_eye = None
-            # While one eye winks, only a closure of both eyes is a blink - and
-            # even those are ignored (the open eye may blink during a long drag).
-            in_wink = winking is not None or was_winking is not None
-            events = self.blink.update(t, min(cl, cr) if in_wink else blink_signal(cl, cr, self.blink_mode))
-            if in_wink or t < self._blink_mute_until:
-                events = [e for e in events if e.type == "blink_expired"]
+            # The blink detector always watches this person's blink signal (it is
+            # never switched in the middle of a closure). Blinks during a held
+            # wink (the open eye blinking during a long drag) or just after a
+            # wink are dropped *and forgotten*, so they cannot pair up into a
+            # double blink. A wink that is only starting does not mute blinks: a
+            # lid that leads by a frame is part of an ordinary blink.
+            events = self.blink.update(t, blink_signal(cl, cr, self.blink_mode))
+            winked = False
             for ev in wink_events:
-                if ev.type == "wink_start":
-                    self.blink.cancel()
-                elif ev.type == "wink_end":
+                if ev.type in ("wink_start", "wink"):
+                    winked = True        # that closure was a wink, not a blink
+                if ev.type in ("wink", "wink_end"):
                     self._blink_mute_until = t + BLINK_MUTE_AFTER_WINK_S
+            if winked or self.wink.pressed is not None or t < self._blink_mute_until:
+                dropped = any(e.type != "blink_expired" for e in events)
+                events = [e for e in events if e.type == "blink_expired"]
+                if (dropped or winked) and self.blink.cancel() and not events:
+                    events.append(BlinkEvent("blink_expired", t))
             events += wink_events
             state = self.blink.state()
             closing = state.closing
+            if winking is not None:
+                # During a wink the cursor follows the open eye; it holds still
+                # only if that eye closes as well.
+                closing = min(cl, cr) >= state.open_threshold
             raw = self._predict(feats.vector)
-            gaze, frozen = self.stabilizer.update(t, raw, closing, hold=state.deep)
+            gaze, frozen = self.stabilizer.update(t, raw, closing, hold=state.deep and winking is None)
             if self._blink_recording is not None and len(self._blink_recording) < MAX_BLINK_RECORDING:
                 self._blink_recording.append((t, cl, cr))
             phase = header.get("gesture")
@@ -699,7 +713,14 @@ class TrackerSession:
         self.profile_meta = meta
         self.stabilizer.reset()
         if not model.eyes:
-            self._start_eye_models()  # saved before one-eye networks existed
+            # Saved before one-eye networks existed: add them now (a second or
+            # two, once). Done here rather than in the background so that nothing
+            # - a quick adjust, say - can change the model while they train.
+            try:
+                fit_eye_models(model, data)
+                self._save_profile()
+            except CalibrationError:
+                log.info("Not enough saved data for one-eye networks")
         return [{"type": "profile", "loaded": True, **meta, "personal": self.personal_view()}]
 
     def _cmd_profile_delete(self, cmd: dict) -> list[dict]:
@@ -877,34 +898,6 @@ class TrackerSession:
         self._job.start()
         return True
 
-    def _start_eye_models(self) -> bool:
-        """Train the one-eye networks for a model that has none (in the background)."""
-        if self._job_running() or self.model is None:
-            return False
-        model = self.model
-        candidate = model.clone()
-        snapshot = self.data.copy()
-
-        def run() -> None:
-            try:
-                fit_eye_models(candidate, snapshot)
-            except Exception:
-                log.info("Could not train the one-eye networks", exc_info=True)
-                return
-            with self._lock:
-                if self.model is not model:
-                    return
-                model.eyes = candidate.eyes
-                for key in ("eye", "eye_cv_px"):
-                    model.meta[key] = candidate.meta[key]
-                self._save_profile()
-                view = self.personal_view()
-            self._push({"type": "personal", "ok": True, "personal": view})
-
-        self._job = threading.Thread(target=run, name="paralic-eye-models", daemon=True)
-        self._job.start()
-        return True
-
     def _cmd_finetune(self, cmd: dict) -> list[dict]:
         if self.model is None:
             raise PersonalizationError("Calibrate first")
@@ -923,6 +916,10 @@ class TrackerSession:
     def _cmd_blink_calibration_start(self, cmd: dict) -> list[dict]:
         self._blink_recording = []
         return [{"type": "blink_calibration_started", "ok": True}]
+
+    def _cmd_blink_calibration_cancel(self, cmd: dict) -> list[dict]:
+        self._blink_recording = None
+        return [{"type": "blink_calibration_cancelled", "ok": True}]
 
     def _cmd_blink_calibration_finish(self, cmd: dict) -> list[dict]:
         samples, self._blink_recording = self._blink_recording or [], None
@@ -957,6 +954,10 @@ class TrackerSession:
     def _cmd_wink_calibration_start(self, cmd: dict) -> list[dict]:
         self._wink_recording = []
         return [{"type": "wink_calibration_started", "ok": True}]
+
+    def _cmd_wink_calibration_cancel(self, cmd: dict) -> list[dict]:
+        self._wink_recording = None
+        return [{"type": "wink_calibration_cancelled", "ok": True}]
 
     def _cmd_wink_calibration_finish(self, cmd: dict) -> list[dict]:
         samples, self._wink_recording = self._wink_recording or [], None

@@ -126,3 +126,15 @@ def test_not_enough_points_raises():
     keep = np.isin(G, [f"cal:{i}" for i in range(3)])
     with pytest.raises(CalibrationError):
         fit_full_calibration(_to_data(X[keep], Y[keep], G[keep]))
+
+
+def test_clone_does_not_share_meta():
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(120, 6))
+    Y = X[:, :2] * 100
+    model, _ = GazeNet.train(X, Y, np.repeat(np.arange(12), 10), iters=50)
+    model.meta["nested"] = {"a": 1}
+    twin = model.clone()
+    twin.meta["eye"] = "left"
+    twin.meta["nested"]["a"] = 2
+    assert "eye" not in model.meta and model.meta["nested"]["a"] == 1

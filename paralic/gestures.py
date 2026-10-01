@@ -149,6 +149,7 @@ class WinkDetector:
     # -- updates ------------------------------------------------------------
     def update_missing(self, t: float) -> list[WinkEvent]:
         """Call when no face was found in a frame."""
+        self._pending, self._run = None, 0   # a wink that was only starting is forgotten
         if self.state == IDLE or self._last_seen is None:
             return []
         if (t - self._last_seen) * 1000.0 <= self.config.missing_reset_ms:
@@ -158,6 +159,8 @@ class WinkDetector:
     def update(self, t: float, closure_left: float, closure_right: float) -> list[WinkEvent]:
         cfg = self.config
         c = {"left": float(closure_left), "right": float(closure_right)}
+        if self._last_seen is not None and t - self._last_seen > 0.25:
+            self._pending, self._run = None, 0   # frames were missing: start counting again
         self._last_seen = t
         events: list[WinkEvent] = []
         for e in EYES:
@@ -258,8 +261,13 @@ def wink_config(personal: dict, gestures: Optional[dict] = None) -> WinkConfig:
     # Winks must be clearly more lopsided than this person's ordinary blinks,
     # and a held wink clearly longer than a blink.
     blink_floor = 0.0
+    lopsided = False
     if blink.get("blink_asym") is not None:
-        blink_floor = float(np.clip(1.5 * float(blink["blink_asym"]), 0.0, 0.6))
+        wanted = 1.5 * float(blink["blink_asym"])
+        # Ordinary blinks this one-sided (e.g. one eye hardly closes) cannot be
+        # told apart from winks: winks stay off unless the person turns them on.
+        lopsided = wanted > 0.6
+        blink_floor = float(np.clip(wanted, 0.0, 0.6))
         cfg.asym_min = max(cfg.asym_min, blink_floor)
     if blink.get("blink_ms") is not None:
         cfg.hold_ms = max(cfg.hold_ms, float(blink["blink_ms"]) * 1.5)
@@ -273,6 +281,8 @@ def wink_config(personal: dict, gestures: Optional[dict] = None) -> WinkConfig:
         ec.enabled = mapping != "off" or g.get(f"{eye}_quick", "off") != "off"
         if w and not w.get("ok") and not g.get(f"{eye}_forced"):
             ec.enabled = False  # tested: this eye cannot wink reliably on its own
+        if lopsided and not g.get(f"{eye}_forced"):
+            ec.enabled = False
     return cfg
 
 

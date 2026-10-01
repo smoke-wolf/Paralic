@@ -478,15 +478,16 @@ def test_old_profiles_get_one_eye_networks_on_load(env, tmp_path):
     session.model.eyes = {}
     session.model.meta.pop("eye", None)
     session._save_profile()
-    pushed = []
-    s2 = TrackerSession(lambda: FakeTracker(), UserStore(tmp_path), push=pushed.append)
-    assert s2.handle_command({"type": "profile_load"})[0]["loaded"]
-    s2.wait_for_job()
+    s2 = TrackerSession(lambda: FakeTracker(), UserStore(tmp_path))
+    reply = s2.handle_command({"type": "profile_load"})[0]
+    assert reply["loaded"]
+    # Trained during the load (so nothing can change the model meanwhile).
     assert set(s2.model.eyes) == {"left", "right"}
-    assert pushed and pushed[-1]["personal"]["eye_models"]["available"] == ["left", "right"]
-    # ...and they were saved with the profile.
-    model, _, _ = s2.profiles.load()
+    assert reply["personal"]["eye_models"]["available"] == ["left", "right"]
+    # ...and they were saved with the profile, together with all its training data.
+    model, data, _ = s2.profiles.load()
     assert set(model.eyes) == {"left", "right"}
+    assert len(data.frames) == len(session.data.frames) > 0
 
 
 def test_dwell_experiment_adopts_a_new_dwell_time(env):
@@ -538,3 +539,69 @@ def test_blink_profiles_from_before_per_eye_signals_keep_the_average(env):
     session.personal["blink"]["signal"] = "left"
     session._apply_effective()
     assert session.blink_mode == "left"
+
+
+# -- regressions from the gesture code review ------------------------------------------------
+
+@pytest.fixture
+def lids(env, monkeypatch):
+    """Feed per-eye closure levels directly (gaze fixed at the screen centre)."""
+    session, tracker, clock, frame, _ = env
+    user = VirtualUser(seed=5, noise=0.5)
+    state = {"id": 50_000}
+
+    def feed(seq):
+        out = []
+        for cl, cr in seq:
+            state["id"] += 1
+            tracker.push(fake_features(user.features(SCREEN_W / 2, SCREEN_H / 2, Head()), 0.5 * (cl + cr), cl, cr))
+            out.extend(session.handle_frame(pack_frame({"id": state["id"]}, JPEG)))
+            clock.tick()
+        return [m for m in out if m["type"] != "frame"]
+
+    return session, feed
+
+
+OPEN2 = [(0.12, 0.12)]
+
+
+def test_a_blink_during_a_held_wink_never_pairs_into_a_click(lids):
+    session, feed = lids
+    feed(OPEN2 * 60)
+    seq = [(0.85, 0.12)] * 20 + [(0.85, 0.85)] * 4 + [(0.85, 0.12)] * 3   # the open eye blinks mid-drag
+    seq += OPEN2 * 10 + [(0.85, 0.85)] * 4 + OPEN2 * 30                   # one ordinary blink afterwards
+    types = [m["type"] for m in feed(seq)]
+    assert "wink_start" in types and "wink_end" in types
+    assert "double_blink" not in types
+
+
+def test_lopsided_blinks_count_once_when_watching_the_average(lids):
+    session, feed = lids
+    session.personal["blink"] = {"sensitivity": 0.3, "min_threshold": 0.3, "double_gap_ms": 550, "signal": "mean"}
+    session._apply_effective()
+    feed(OPEN2 * 60)
+    for lead in (1, 2, 3):
+        blink = [(0.85, 0.12)] * lead + [(0.85, 0.85)] * 4 + [(0.12, 0.12)] * 40
+        types = [m["type"] for m in feed(blink)]
+        assert types.count("blink") == 1 and "double_blink" not in types, (lead, types)
+
+
+def test_someone_whose_one_eye_hardly_closes_can_still_double_blink(lids):
+    session, feed = lids
+    lblink = [(0.5, 0.14)] + [(0.85, 0.16)] * 2 + [(0.5, 0.14)]
+    session.handle_command({"type": "blink_calibration_start"})
+    feed((OPEN2 * 40 + lblink + OPEN2 * 6 + lblink + OPEN2 * 30) * 3)
+    res = session.handle_command({"type": "blink_calibration_finish"})[0]
+    assert res["ok"] and res["signal"] in ("left", "mean")
+    assert res["personal"]["winks"] == {"left": False, "right": False}   # winks would be their blinks
+    types = [m["type"] for m in feed((OPEN2 * 40 + lblink + OPEN2 * 6 + lblink + OPEN2 * 30) * 3)]
+    assert types.count("double_blink") == 3
+
+
+def test_a_long_close_is_never_reported_as_a_blink(lids):
+    session, feed = lids
+    session.handle_command({"type": "gestures_set", "gestures": {"long_close": "menu", "long_close_ms": 600}})
+    assert session.blink.config.long_close_ms >= session.blink.config.max_closed_ms + 200
+    feed(OPEN2 * 60)
+    types = [m["type"] for m in feed([(0.95, 0.95)] * 36 + OPEN2 * 20)]   # 1.2 s
+    assert "long_close" in types and "blink" not in types

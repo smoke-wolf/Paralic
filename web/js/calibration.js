@@ -259,7 +259,15 @@ export class Calibrator {
     if (result.saved === false) {
       toast('Could not save the calibration to disk — it works until you reload the page.', 'warn', 7000);
     }
-    const blinks = await this.blinkStep();
+    // The network is trained and saved by now: Esc here skips only the blink step.
+    let blinks = null;
+    try {
+      blinks = await this.blinkStep();
+    } catch (err) {
+      if (!(err instanceof Cancelled)) throw err;
+      this.cancelled = false;
+      toast('Skipped the blink step — kept your blink settings');
+    }
     if (blinks && !blinks.ok) toast(`Kept the standard blink settings: ${blinks.error}`, 'warn', 6000);
     const again = await this.showResults(result);
     if (again) return this.runFull();
@@ -369,16 +377,22 @@ export class Calibrator {
     this.placeDot(0.5, 0.5);
     this.ui.dot.classList.add('settle');
     this.say('Last step: your blinks', 'Each time the dot turns purple, blink twice — like a relaxed “yes, yes”.', { top: true });
-    await this.wait(2600);
-    for (let i = 0; i < 3; i++) {
-      this.setProgress(3, i);
-      this.ui.dot.classList.add('blink-now');
-      sounds.point();
-      this.say('Blink twice now', '', { top: true });
-      await this.wait(1700);
-      this.ui.dot.classList.remove('blink-now');
-      this.say('', '');
-      await this.wait(1300);
+    try {
+      await this.wait(2600);
+      for (let i = 0; i < 3; i++) {
+        this.setProgress(3, i);
+        this.ui.dot.classList.add('blink-now');
+        sounds.point();
+        this.say('Blink twice now', '', { top: true });
+        await this.wait(1700);
+        this.ui.dot.classList.remove('blink-now');
+        this.say('', '');
+        await this.wait(1300);
+      }
+    } catch (err) {
+      // Stop recording without analysing (the person's settings stay as they were).
+      this.tracker.send({ type: 'blink_calibration_cancel' });
+      throw err;
     }
     this.setProgress(3, 3);
     this.ui.dot.className = 'calib-dot done';
@@ -420,6 +434,7 @@ export class Calibrator {
       await this.wait(3600);
       const ring = h('div', { class: 'wink-ring', style: { left: '50%', top: '50%' } });
       this.ui.ov.append(ring);
+      let finished = false;
       const steps = [
         ['rest', 1800, 'Keep both eyes open'],
         ['left', 2800, 'Close your LEFT eye', 'Keep your right eye open'],
@@ -439,9 +454,11 @@ export class Calibrator {
             await this.wait(40);
           }
         }
+        finished = true;
       } finally {
         this.tracker.setGesturePhase(null);
         ring.remove();
+        if (!finished) this.tracker.send({ type: 'wink_calibration_cancel' });
       }
       this.ui.dot.className = 'calib-dot done';
       this.say('Checking…', h('div', { class: 'spinner' }));
