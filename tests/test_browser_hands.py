@@ -368,7 +368,7 @@ def test_first_visit_sets_up_the_hand_then_browses_by_hand(browser, site):
 
         # Pinch and move the hand down: the page scrolls (and nothing is clicked).
         pg.evaluate("location.hash = '#/read/how-it-works'")
-        pg.wait_for_selector(".article h1")
+        pg.wait_for_selector(".article h1 >> visible=true")
         point_at(pg, pose, 800, 500)
         pose.wait_frames(4)
         before = scroll_top(pg)
