@@ -67,6 +67,57 @@ important possible impossible different difficult simple special ready busy quie
 quick clean dirty wet dry heavy light dark bright soft hard warm cool safe dangerous
 also because until while since unless although though whether
 high higher highest hill hills hit history hire hide hidden hiking hip hips hint hint his him himself
+absolutely actually anyway apparently basically certainly clearly definitely especially exactly finally generally
+hopefully honestly instead mainly mostly naturally obviously perhaps possibly probably quickly rather recently
+seriously simply slowly somehow suddenly totally truly unfortunately fortunately already ago anymore besides
+otherwise therefore meanwhile together apart alone instead
+i've i'd i'll you're you've you'd you'll he's she's we're we've we'll they're they've they'll isn't aren't
+wasn't weren't hasn't haven't hadn't doesn't didn't won't wouldn't couldn't shouldn't there's here's what's
+where's who's how's when's why's
+accept add agree allow appear apply arrive attend avoid bake bear beat become became belong bend bite blow boil
+borrow break broke broken build burn calm catch caught change changing charge check chew chose climb collect
+comfort complain complete continue copy correct count cover cry crying cut deliver describe discuss disturb
+drop dry earn enter escape expect explain feed feeding fill fit fix fixed follow fly forgive freeze gather grab
+grow grew guess hang happen happened heal heat hide hit hug hurry imagine improve include invite join joke jump
+kick kiss knock laugh laughing learn learning leave leaving lend lift live living lock marry measure meet meeting
+mix nod notice offer order organise organize pack park pass pick plan plant point pour practise practice pray
+prepare press pretend promise protect pull raise reach realise realize receive recognise recognize reduce refuse
+relax remove repair repeat replace reply report return ride ring roll rub rush scratch scream search shake share
+shout shut sign skip slip smell smile sneeze snore solve sort spill squeeze stay stick stir stretch study suggest
+support suppose surprise swim switch taste teach test tickle tie touch travel treat trust undress unlock visit
+vote wave wear weigh whisper wipe wonder worry wrap yawn yell
+aching allergic allergy anxious anxiety bandage bleeding blood bruise burnt cramp cramps constipated diarrhea
+diarrhoea diabetes exercise exercises faint fluid fluids gp infection inhaler injection insulin migraine mobility
+oxygen painkiller painkillers paralysed paralyzed physio physiotherapy prescription pressure rash reposition
+spasm spasms stiff suction swollen symptom symptoms temperature therapist therapy thermometer urine vomit vomiting
+wheelchair walker hoist commode tube ventilator mask drip pump catheter dressing feeding numb tingling weak
+alarm armchair bin blind blinds board bookshelf bucket button calendar candle carpet ceiling channel clock
+cupboard curtain curtains cushion drawer duvet fan fridge freezer heater heating hoover iron kettle ladder laptop
+mattress microwave mirror mug oven painting plug printer radiator rug scissors screen shelf sheet sheets sink soap
+socket speaker stairs stove tap tape toaster toothbrush toothpaste torch toy toys tray umbrella vase wardrobe
+bacon beans beef biscuit biscuits broccoli burger cabbage carrot carrots cereal cherries chips cookie cookies
+corn crisps cucumber curry custard dessert donut grapes gravy ham honey jam jelly ketchup lemon lemonade lettuce
+mango melon mushroom mushrooms noodles nuts oatmeal oats olive omelette onion onions pancake pancakes peach pear
+peas pie pineapple pizza pork porridge pudding sausage sausages smoothie soda spaghetti steak strawberry
+strawberries sweets toast tomato tomatoes tuna turkey vanilla wine beer yogurt yoghurt
+adult adults boss colleague colleagues partner girlfriend boyfriend granddaughter grandson grandchildren nephew
+niece stranger visitor visitors guest guests priest pastor chaplain volunteer
+alone annoyed ashamed brave cheerful confident curious delighted depressed disappointed embarrassed exhausted
+frustrated grateful grumpy guilty hopeful impatient jealous joyful miserable overwhelmed peaceful pleased positive
+relieved restless safe satisfied shocked shy stressed surprised terrible thankful unhappy strong
+airport bank cafe church city club gym hairdresser hotel library market mosque museum office pharmacy pool post
+restaurant station supermarket synagogue temple theatre theater zoo
+anniversary date easter festival future midday midnight noon past present schedule season weekday
+cloud clouds forest leaf leaves ocean plant plants rock sunshine waves
+art baking cards chess crossword dancing drawing gardening golf jigsaw knitting movies photography podcast puzzle
+puzzles quiz rugby sewing singing sport sports swimming walking yoga
+app apps calls camera chat contact contacts download emails headphones internet keyboard link login messages
+mouse password post search settings text texts update upload videos volume wifi
+amazing awful awesome boring brilliant broken careful cheap clever cosy cozy crazy cute dear delicious dirty empty
+enormous expensive extra fair famous fantastic favourite favorite fresh friendly gentle gorgeous handsome healthy
+heavy helpful honest horrible huge incredible interesting kind lazy loud lucky messy modern narrow nasty natural
+nice noisy normal perfect pleasant polite poor popular pretty proper rare rich rough rude sharp shiny smooth sour
+spicy sticky strict sweet tasty thick thin tidy tiny ugly unusual useful useless weird wide wild wise wrong
 `;
 
 export const WORDS = COMMON.split(/\s+/).map((w) => w.trim()).filter((w, i, all) => w && all.indexOf(w) === i);
@@ -113,4 +164,100 @@ export const NEXT = {
   not: ['now', 'yet', 'okay', 'good', 'sure'],
   "it's": ['too', 'okay', 'not', 'a'],
   "i'm": ['not', 'feeling', 'tired', 'okay', 'cold', 'hot', 'fine', 'sorry'],
+  and: ['i', 'then', 'the', 'you', 'a', 'it', 'my', 'we', 'some', 'also'],
+  but: ['i', 'it', 'not', 'the', 'you', 'now', 'please', 'thank'],
+  or: ['not', 'a', 'the', 'maybe', 'later', 'something'],
+  how: ['are', 'is', 'about', 'much', 'long', 'do', 'was', 'many', 'did'],
+  what: ['is', 'time', 'are', 'do', 'did', 'about', 'happened', 'was', 'day'],
+  where: ['is', 'are', 'did', 'do', 'am', 'can', 'were'],
+  when: ['is', 'are', 'can', 'will', 'did', 'do', 'you', 'we'],
+  why: ['is', 'are', 'did', 'not', 'do', 'can'],
+  who: ['is', 'are', 'was', 'did', 'can', 'will'],
+  have: ['a', 'you', 'to', 'some', 'been', 'the', 'we', 'my', 'any'],
+  has: ['been', 'the', 'my', 'a', 'anyone', 'it'],
+  had: ['a', 'my', 'some', 'enough', 'to', 'the'],
+  do: ['you', 'not', 'it', 'we', 'that', 'this', 'i', 'something'],
+  does: ['it', 'that', 'this', 'he', 'she', 'anyone'],
+  did: ['you', 'it', 'i', 'we', 'he', 'she', 'they', 'not'],
+  "don't": ['know', 'want', 'like', 'worry', 'feel', 'need', 'go', 'understand', 'think', 'forget'],
+  "can't": ['breathe', 'see', 'hear', 'sleep', 'move', 'find', 'reach', 'wait', 'remember'],
+  will: ['you', 'be', 'it', 'we', 'i', 'they', 'not'],
+  "let's": ['go', 'talk', 'play', 'watch', 'eat', 'have', 'try', 'see'],
+  let: ['me', 'us', 'it', 'them'],
+  me: ['a', 'the', 'some', 'know', 'see', 'up', 'down', 'please', 'help', 'out'],
+  get: ['me', 'the', 'up', 'some', 'a', 'my', 'better', 'help', 'out', 'ready'],
+  give: ['me', 'it', 'the', 'my', 'some', 'up'],
+  take: ['me', 'the', 'my', 'a', 'it', 'off', 'care'],
+  put: ['the', 'it', 'my', 'on', 'me', 'down', 'away'],
+  make: ['me', 'a', 'it', 'some', 'sure', 'the'],
+  help: ['me', 'please', 'with', 'you'],
+  tell: ['me', 'them', 'my', 'the', 'you', 'him', 'her'],
+  show: ['me', 'you', 'the', 'my', 'them'],
+  see: ['you', 'the', 'my', 'it', 'a', 'that', 'what'],
+  look: ['at', 'for', 'up', 'out', 'after'],
+  come: ['here', 'back', 'in', 'and', 'with', 'see', 'on', 'over'],
+  going: ['to', 'home', 'out', 'well', 'on'],
+  been: ['a', 'here', 'feeling', 'waiting', 'very', 'better', 'thinking'],
+  be: ['a', 'there', 'careful', 'quiet', 'back', 'okay', 'better', 'here'],
+  so: ['much', 'tired', 'good', 'happy', 'sorry', 'i', 'it', 'very', 'cold', 'hot'],
+  very: ['much', 'good', 'tired', 'well', 'happy', 'cold', 'hot', 'sore', 'nice'],
+  too: ['hot', 'cold', 'loud', 'much', 'bright', 'dark', 'fast', 'tight'],
+  really: ['good', 'tired', 'sorry', 'want', 'need', 'like', 'hurts', 'happy'],
+  of: ['the', 'my', 'water', 'tea', 'you', 'it', 'this', 'course'],
+  in: ['the', 'my', 'a', 'pain', 'bed', 'here', 'there'],
+  on: ['the', 'my', 'it', 'please', 'tv', 'a'],
+  at: ['the', 'home', 'my', 'night', 'all', 'me'],
+  for: ['me', 'you', 'the', 'a', 'my', 'helping', 'coming', 'everything'],
+  with: ['me', 'you', 'my', 'the', 'a', 'it'],
+  about: ['it', 'the', 'my', 'you', 'that', 'this', 'what'],
+  from: ['the', 'my', 'here', 'you', 'there'],
+  up: ['please', 'a', 'the', 'my', 'and'],
+  down: ['please', 'a', 'the', 'my', 'here'],
+  out: ['of', 'the', 'please', 'side', 'for'],
+  off: ['the', 'please', 'it', 'my'],
+  there: ['is', 'are', 'was', 'please'],
+  here: ['is', 'please', 'are', 'now'],
+  now: ['please', 'i', 'it', 'is'],
+  today: ['i', 'is', 'was', 'please'],
+  tomorrow: ['i', 'is', 'we', 'morning'],
+  good: ['morning', 'night', 'afternoon', 'evening', 'idea', 'job', 'thank'],
+  more: ['water', 'please', 'time', 'food', 'tea', 'of', 'than'],
+  little: ['more', 'bit', 'less', 'water'],
+  lot: ['of', 'better', 'more'],
+  time: ['is', 'to', 'for', 'please'],
+  "what's": ['the', 'that', 'wrong', 'happening', 'for', 'on'],
+  "where's": ['my', 'the', 'everyone'],
+  "how's": ['your', 'it', 'everyone'],
+  love: ['you', 'it', 'that', 'this', 'to'],
+  miss: ['you', 'my', 'home', 'them'],
+  hurts: ['a', 'here', 'when', 'too', 'more'],
+  pain: ['in', 'is', 'medicine', 'here'],
+  hungry: ['please', 'now', 'can'],
+  thirsty: ['please', 'can', 'now'],
+  cold: ['please', 'can', 'here'],
+  hot: ['please', 'can', 'here', 'water'],
+  tired: ['now', 'please', 'today'],
+  sorry: ['i', 'for', 'about'],
+  excuse: ['me'],
+  "i'll": ['be', 'try', 'wait', 'have', 'see'],
+  "i've": ['been', 'got', 'had', 'finished'],
+  "i'd": ['like', 'love', 'rather'],
+  "you're": ['welcome', 'very', 'so', 'right', 'the'],
+  "that's": ['good', 'great', 'right', 'fine', 'okay', 'not', 'enough', 'perfect'],
+  watch: ['tv', 'a', 'the', 'something', 'it'],
+  play: ['some', 'a', 'music', 'the', 'cards', 'games'],
+  read: ['me', 'a', 'the', 'my', 'it'],
+  listen: ['to', 'please'],
+  talk: ['to', 'about', 'later', 'with'],
+  sit: ['up', 'down', 'with', 'here'],
+  lie: ['down'],
+  move: ['me', 'my', 'the', 'it', 'over', 'up'],
+  wait: ['a', 'for', 'please', 'here'],
+  stop: ['please', 'it', 'that', 'the'],
+  drink: ['of', 'please', 'water', 'some'],
+  eat: ['something', 'now', 'please', 'later'],
+  sleep: ['now', 'well', 'please', 'later'],
+  your: ['help', 'name', 'day', 'family', 'phone'],
+  our: ['family', 'house', 'home'],
+  an: ['hour', 'ambulance', 'idea', 'apple', 'appointment'],
 };
