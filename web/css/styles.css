@@ -1041,3 +1041,25 @@ body.gaze-dragging [data-dropzone].drop-hover,
 .lab-table th { color: var(--muted); font-weight: 600; }
 .opt.swatch::before { content: ""; display: inline-block; width: 18px; height: 18px; margin-right: 10px; border-radius: 50%; background: var(--swatch); vertical-align: -3px; }
 .target.decoy { background: radial-gradient(circle, #cbd5e1 0 10%, #475569 11% 100%); box-shadow: none; }
+
+/* Spoken-instruction transcript during calibration (accessibility). */
+.calib-transcript {
+  position: fixed; left: 50%; bottom: 4vh; transform: translateX(-50%);
+  max-width: 80vw; text-align: center; color: #cbd5e1; opacity: 0.85;
+  font-size: 1.05rem; line-height: 1.4; pointer-events: none;
+}
+
+/* Smooth-pursuit trails + Snake chase. */
+.overlay.pursuit { background: #0b1020; }
+.pursuit-dot {
+  position: fixed; top: 0; left: 0; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+  border-radius: 50%; background: radial-gradient(circle at 35% 35%, #a78bfa, #6d28d9);
+  box-shadow: 0 0 24px rgba(167, 139, 250, 0.8); will-change: translate;
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.pursuit-dot.locked { background: radial-gradient(circle at 35% 35%, #86efac, #16a34a);
+  box-shadow: 0 0 30px rgba(34, 197, 94, 0.9); }
+.pursuit-hud {
+  position: fixed; top: 3vh; right: 4vw; color: #e2e8f0; font-size: 1.4rem;
+  font-variant-numeric: tabular-nums; opacity: 0.9;
+}

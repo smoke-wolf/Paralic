@@ -20,12 +20,16 @@ import { h, sleep, toast } from './dom.js';
 import { icon } from './icons.js';
 import { clientToScreen, screenToClient } from './screen-space.js';
 import { sounds } from './sound.js';
+import { speak, canSpeak } from './speech.js';
 
 class Cancelled extends Error {}
 
+// A denser 5x4 grid (plus the centre) than the old 13 dots: more positions make
+// the gaze network interpolate better across the whole screen. Snake-ordered so
+// the dot only ever makes short hops.
 function gridPoints() {
-  const xs = [0.06, 0.35, 0.65, 0.94];
-  const ys = [0.08, 0.5, 0.92];
+  const xs = [0.06, 0.28, 0.5, 0.72, 0.94];
+  const ys = [0.08, 0.37, 0.63, 0.92];
   const pts = [];
   ys.forEach((y, row) => {
     const rowXs = row % 2 === 0 ? xs : [...xs].reverse(); // snake order: short hops
@@ -38,13 +42,19 @@ function gridPoints() {
 const FULL_POINTS = gridPoints();
 const VALIDATION_POINTS = [[0.27, 0.28], [0.73, 0.28], [0.5, 0.55], [0.73, 0.8], [0.27, 0.8]];
 const ADJUST_POINTS = [[0.5, 0.5], [0.12, 0.14], [0.88, 0.14], [0.88, 0.86], [0.12, 0.86]];
+// Explicit face tilt / rotation sub-steps. Keeping the eyes on the centre dot
+// while the head moves teaches the network to compensate for head pose: yaw
+// (turn), pitch (nod) and roll (tilt). Each is held long enough to gather
+// frames across the movement. [text, hold ms].
 const HEAD_STEPS = [
-  'Keep your eyes on the dot…',
-  'Slowly turn your head a little to the left',
-  '…and a little to the right',
-  'Now tilt your head slightly up',
-  '…and slightly down',
-  'Back to the middle. Great!',
+  ['Keep your eyes on the dot, and keep them there the whole time.', 2000],
+  ['Slowly turn your head to the left — eyes still on the dot.', 2600],
+  ['And slowly turn your head to the right.', 2600],
+  ['Back to centre. Now slowly tip your head up, like a small nod up.', 2600],
+  ['And slowly tip your head down.', 2600],
+  ['Back to centre. Now tilt your head towards your left shoulder.', 2600],
+  ['And tilt towards your right shoulder.', 2600],
+  ['Lovely — back to the middle. Keep looking at the dot.', 2000],
 ];
 
 export function rateAccuracy(errorPx) {
@@ -102,8 +112,11 @@ export class Calibrator {
     const text = h('div', { class: 'calib-text' });
     const warning = h('div', { class: 'calib-warning', hidden: true });
     const progress = h('div', { class: 'calib-progress' });
-    ov.append(dot, text, warning, progress);
-    return { ov, dot, text, warning, progress };
+    // Visible transcript of the spoken guidance (accessibility; also helps when
+    // speech is off or unsupported). Lives at the bottom, out of the way.
+    const transcript = h('div', { class: 'calib-transcript', 'aria-live': 'polite' });
+    ov.append(dot, text, warning, progress, transcript);
+    return { ov, dot, text, warning, progress, transcript };
   }
 
   checkCancel() {
@@ -118,13 +131,33 @@ export class Calibrator {
     }
   }
 
-  say(title, body = '', { top = false } = {}) {
+  say(title, body = '', { top = false, voice = true } = {}) {
     const { text } = this.ui;
     text.classList.toggle('top', top);
     text.innerHTML = '';
     if (title) text.append(h('h2', {}, title));
     if (body) text.append(typeof body === 'string' ? h('p', {}, body) : body);
     text.style.opacity = title || body ? '1' : '0';
+    // Read the instruction aloud (accessibility), synced with the on-screen
+    // text and the visible transcript. Only speak real instructions, never the
+    // spinner/animation bodies, and never the same line twice in a row.
+    if (voice) this.announce(title, typeof body === 'string' ? body : '');
+  }
+
+  announce(title, body = '') {
+    const line = [title, body].filter(Boolean).join('. ').trim();
+    if (!line || line === this._lastSpoken) return;
+    this._lastSpoken = line;
+    this.transcribe(line);
+    if (canSpeak()) speak(line);
+  }
+
+  /** Keep a small visible transcript of what was spoken, for anyone who can't
+   *  hear it or has speech turned off. */
+  transcribe(line) {
+    const t = this.ui.transcript;
+    if (!t) return;
+    t.textContent = line;
   }
 
   setProgress(total, done) {
@@ -161,7 +194,7 @@ export class Calibrator {
   }
 
   /** Label frames with the dot position until enough good frames arrived. */
-  async collect(kind, point, x, y, { minFrames = 16, minMs = 550, maxMs = 2600 } = {}) {
+  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = 3000 } = {}) {
     let count = 0;
     let missing = 0;
     const off = this.tracker.on('frame', (m) => {
@@ -196,9 +229,9 @@ export class Calibrator {
     for (let i = 0; i < points.length; i++) {
       const [fx, fy] = points[i];
       const { x, y } = this.placeDot(fx, fy, { instant: i === 0 });
-      await this.wait(i === 0 ? 400 : 620);
+      await this.wait(i === 0 ? 650 : 820);
       this.ui.dot.classList.add('settle');
-      await this.wait(opts.settleMs ?? 380);
+      await this.wait(opts.settleMs ?? 520);
       this.ui.dot.classList.add('collect');
       let n = await this.collect(kind, i, x, y, opts);
       if (n < 5) n = await this.collect(kind, i, x, y, { ...opts, maxMs: 3000 }); // one retry
@@ -228,11 +261,14 @@ export class Calibrator {
     await this.wait(1600);
     this.ui.dot.classList.add('collect');
     const s = clientToScreen(c.x, c.y);
-    this.tracker.setLabel({ x: s.x, y: s.y, kind: 'head', pt: 0 });
+    // Give each movement its own point id so grouped cross-validation can treat
+    // the pose steps as distinct groups.
     try {
-      for (const step of HEAD_STEPS) {
+      for (let i = 0; i < HEAD_STEPS.length; i++) {
+        const [step, hold] = HEAD_STEPS[i];
+        this.tracker.setLabel({ x: s.x, y: s.y, kind: 'head', pt: i });
         this.say(step, '', { top: true });
-        await this.wait(1050);
+        await this.wait(hold);
       }
     } finally {
       this.tracker.setLabel(null);
