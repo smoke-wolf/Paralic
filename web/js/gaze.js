@@ -13,8 +13,13 @@
 //   cursor lines up better with the buttons you actually pick.
 // * Optional dwell click (per person): resting the eyes on a button for a
 //   moment clicks it; a ring on the cursor fills up first.
+// * Graceful motion (per person, see motion.js): the cursor glides instead of
+//   jumping and, with "hold still while you look", rests on the average of
+//   each fixation. Optional head nudge: small head tilts move the cursor the
+//   last few pixels.
 
 import { $$, clamp, distToRect, nearestPointIn, isVisible, h } from './dom.js';
+import { CursorMotion, HeadNudge } from './motion.js';
 import { screenToClient } from './screen-space.js';
 import { getSettings } from './settings.js';
 import { sounds } from './sound.js';
@@ -42,7 +47,12 @@ export class GazeController extends EventTarget {
     this.suspended = false;    // e.g. while calibrating
     this.paused = false;
     this.target = null;        // latest gaze point, page coordinates (drift-corrected)
-    this.pos = null;           // animated cursor position
+    this.pos = null;           // animated cursor position (with the head nudge)
+    this.motion = new CursorMotion();
+    this.nudge = new HeadNudge();
+    this.head = null;          // latest head pose [yaw, pitch, roll] (degrees)
+    this.headAt = 0;
+    this._jumped = false;
     this.display = null;       // position after magnetism
     this.hover = null;
     this.hoverSince = 0;
@@ -97,6 +107,8 @@ export class GazeController extends EventTarget {
     if (on) {
       this.clearHover();
       this.disarm();
+    } else {
+      this.restartMotion();
     }
   }
 
@@ -106,12 +118,38 @@ export class GazeController extends EventTarget {
     if (on) {
       this.clearHover();
       this.disarm();
+    } else {
+      this.restartMotion();
     }
     this.dispatchEvent(new CustomEvent('pausechange', { detail: on }));
   }
 
+  /** Start the cursor afresh at the latest gaze point (no glide across the screen). */
+  restartMotion() {
+    this.motion.reset(this.target);
+    this.nudge.clear();
+  }
+
   resetBias() {
     this.bias = { x: 0, y: 0 };
+  }
+
+  /** Apply the person's motion settings (gestures from the server; see GESTURE_DEFAULTS). */
+  configureMotion() {
+    const g = this.gestures || {};
+    // Hold radius: a few times the person's cursor jitter (their smoothed precision).
+    const jitter = Number(this.precisionPx) || 14;
+    this.motion.configure({
+      style: g.motion || 'balanced',
+      hold: g.hold_still !== false,
+      radius: clamp(3 * jitter, 25, 90),
+    });
+    this.nudge.configure({
+      enabled: !!g.head_nudge,
+      speed: Number(g.nudge_speed) || 60,
+      deadzone: Number(g.nudge_deadzone) || 5,
+      signs: { right: Number(g.nudge_right) || -1, up: Number(g.nudge_up) || 1 },
+    });
   }
 
   /** What can be highlighted: buttons and links normally, drop zones while dragging. */
@@ -162,6 +200,13 @@ export class GazeController extends EventTarget {
       // Without a face the server repeats the last position: let it go stale.
       if (msg.face) this.lastGazeAt = performance.now();
       if (!this.pos) this.pos = { ...this.target };
+      // A new sample for the cursor's motion - not while the eyes are shut
+      // (the server holds the point still then).
+      if (msg.face && !msg.frozen && this.motion.addSample(this.target)) this._jumped = true;
+    }
+    if (msg.face && Array.isArray(msg.head)) {
+      this.head = msg.head;
+      this.headAt = performance.now();
     }
     this.frozen = !!msg.frozen;
     this.winking = msg.winking || null;
@@ -272,14 +317,17 @@ export class GazeController extends EventTarget {
       return;
     }
 
-    // Animate towards the latest gaze point (~60 ms time constant).
-    const k = 1 - Math.exp(-dt / 0.06);
-    const dx = this.target.x - this.pos.x;
-    const dy = this.target.y - this.pos.y;
-    if (Math.hypot(dx, dy) > 1.5) {
-      this.pos.x += dx * k;
-      this.pos.y += dy * k;
-    }
+    // Glide towards the gaze point (motion.js), then add the head nudge. While
+    // the head is tilted to nudge, the gaze point is held where it was.
+    this.configureMotion();
+    if (!this.motion.pos) this.motion.reset(this.target);
+    const base = this.motion.step(dt);
+    const head = now - this.headAt < 300 ? this.head : null;
+    const off = this.nudge.update(head, dt, this._jumped);
+    this._jumped = false;
+    this.motion.lock(this.nudge.active);
+    this.pos = { x: base.x + off.x, y: base.y + off.y };
+    cursorClasses(this.cursorEl, this.nudge);
     const p = {
       x: clamp(this.pos.x, 0, window.innerWidth),
       y: clamp(this.pos.y, 0, window.innerHeight),
@@ -440,4 +488,8 @@ export class GazeController extends EventTarget {
 
 function centerOf(r) {
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}
+
+function cursorClasses(cursor, nudge) {
+  cursor.classList.toggle('nudging', nudge.active);
 }

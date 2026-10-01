@@ -72,7 +72,7 @@ FEATURE_MIN_STD = np.array(
      1.0, 1.0, 1.5,         # centimetres
      0.02, 0.02,            # vlid (fraction of the fissure)
      0.02, 0.02,            # tilt (radians)
-     0.03, 0.03, 0.03, 0.03],  # squint / wide blendshapes
+     0.08, 0.08, 0.08, 0.08],  # squint / wide blendshapes (smiling and talking move them too)
     dtype=np.float64,
 )
 
@@ -140,10 +140,12 @@ def _eye_measure(pts: np.ndarray, corner_a: int, corner_b: int,
     aperture = (l_proj - u_proj) / width
     # Where the iris sits vertically between the lids (0 = touching the upper
     # lid, 1 = the lower): a direct vertical-gaze signal, robust to how open the
-    # eye is. Falls back to the midpoint for a (near-)closed eye.
+    # eye is. Falls back to the midpoint for a (near-)closed eye - a drooping
+    # lid not flagged as a blink would otherwise divide by almost nothing - and
+    # is clipped to a plausible range.
     span = l_proj - u_proj
     iris_proj = float((iris_c - center) @ ey)
-    vlid = float((iris_proj - u_proj) / span) if abs(span) > 1e-6 else 0.5
+    vlid = float(np.clip((iris_proj - u_proj) / span, -0.5, 1.5)) if span > 0.04 * width else 0.5
     tilt = float(math.atan2(ex[1], ex[0]))
     radius = float(np.mean(np.hypot(*(iris_pts[1:] - iris_c).T)))
     return EyeMeasure(center=center, iris=iris_c, iris_radius=radius, width=width,
@@ -238,6 +240,29 @@ def extract_features(
         face_box=face_box,
         blendshapes={k: float(v) for k, v in bs.items() if k.startswith("eye")},
     )
+
+
+def face_lighting(rgb: np.ndarray, face_box: tuple[float, float, float, float]) -> dict:
+    """How well the face is lit, for the setup check before calibrating.
+
+    ``face``: mean brightness of the face (0-255); ``frame``: of the whole
+    image (much brighter than the face = a window or lamp behind the person);
+    ``balance``: -1..1, how much brighter the image's right half of the face
+    is than its left (light from one side shades one eye).
+    """
+    h, w = rgb.shape[:2]
+    luma_w = np.array([0.299, 0.587, 0.114], np.float32)
+    frame = float((rgb[::8, ::8].astype(np.float32) @ luma_w).mean())
+    x0, y0, x1, y1 = face_box
+    xa, xb = int(max(0.0, x0) * w), int(min(1.0, x1) * w)
+    ya, yb = int(max(0.0, y0) * h), int(min(1.0, y1) * h)
+    if xb - xa < 8 or yb - ya < 8:
+        return {"face": None, "frame": round(frame, 1), "balance": 0.0}
+    luma = rgb[ya:yb:2, xa:xb:2].astype(np.float32) @ luma_w
+    mid = luma.shape[1] // 2
+    left, right = float(luma[:, :mid].mean()), float(luma[:, mid:].mean())
+    return {"face": round(float(luma.mean()), 1), "frame": round(frame, 1),
+            "balance": round((right - left) / max(1.0, right + left), 3)}
 
 
 def overlay_points(points_px: np.ndarray, image_size: tuple[int, int], feats: FrameFeatures) -> dict:

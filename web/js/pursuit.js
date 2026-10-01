@@ -4,15 +4,18 @@
 // paralic/trails.py) and you follow it with your eyes. Two uses:
 //   * practice / warm-up for smooth-pursuit control,
 //   * a tracking *test* that measures how closely (and how promptly) your gaze
-//     follows motion, and — when you are calibrated — feeds the frames where
-//     your gaze was locked on into the same fine-tuning path the practice page
-//     uses (label_event kind "practice"), so tracking keeps improving.
+//     follows motion.
 //
-// It reuses the live tracker and the app overlay; it never changes the gaze
-// model directly (the server decides whether a fine-tune is accepted).
+// It does not feed fine-tuning: the server labels the frames *before* a label
+// event with its target, which suits a dot you rest your eyes on but not one
+// that moves - the eyes trail a moving dot, so every label would carry that
+// lag and teach the network an offset along the direction of motion.
+//
+// It reuses the live tracker and the app overlay and never changes the gaze
+// model.
 
 import { h } from './dom.js';
-import { clientToScreen, screenToClient } from './screen-space.js';
+import { screenToClient } from './screen-space.js';
 import { speak, canSpeak } from './speech.js';
 import { sounds } from './sound.js';
 
@@ -75,17 +78,14 @@ export class PursuitTrainer {
       return { ok: false, error: String(err) };
     }
 
-    // Live gaze + frame id from the tracker.
+    // Live gaze from the tracker.
     let lastGaze = null;      // client {x,y}
-    let lastFrame = null;     // frame id
     const off = this.tracker.on('frame', (m) => {
-      lastFrame = m.id;
       lastGaze = (m.gaze && m.face) ? screenToClient(m.gaze[0], m.gaze[1]) : null;
     });
 
     const errors = [];        // px distance gaze<->dot while a face is seen
     let score = 0;
-    let lastLabelAt = 0;
     const start = performance.now();
     const total = durationMs * Math.max(1, loops);
 
@@ -109,14 +109,6 @@ export class PursuitTrainer {
           const locked = d <= lockRadius;
           dot.classList.toggle('locked', locked);
           if (locked && game) { score += 1; }
-          // Feed the fine-tuner: while locked on, periodically label this frame
-          // with the dot position (same path the practice page uses). Harmless
-          // if not calibrated or learning is off — the server just skips it.
-          if (locked && now - lastLabelAt > 500 && lastFrame != null) {
-            lastLabelAt = now;
-            const s = clientToScreen(cx, cy);
-            this.tracker.send({ type: 'label_event', kind: 'practice', pre_frame: lastFrame, target: [s.x, s.y] });
-          }
           if (game) hud.textContent = `Score ${score}`;
         }
         await this._frame();

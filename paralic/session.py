@@ -47,9 +47,10 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDetector, BlinkEvent
-from .calibration import (CalibrationData, CalibrationError, LabeledFrame, ProfileStore, evaluate_validation,
-                          fit_adjustment, fit_eye_models, fit_full_calibration)
-from .features import extract_features, mesh_overlay, overlay_points
+from .calibration import (FIXATION_KINDS, CalibrationData, CalibrationError, LabeledFrame, ProfileStore,
+                          SettleTracker, calibrated_pose, evaluate_validation, fit_adjustment, fit_eye_models,
+                          fit_full_calibration)
+from .features import extract_features, face_lighting, mesh_overlay, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
 from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, blink_signal, other_eye, wink_config
@@ -88,14 +89,24 @@ GESTURE_DEFAULTS = {
     "tracking_eye": "auto",  # which network leads: auto | both | left | right
     "left_forced": False,    # use an eye for winks even though the wink test found it unreliable
     "right_forced": False,
+    # How the cursor moves (web/js/motion.js).
+    "motion": "balanced",    # glide | balanced | snappy: how quickly it glides to a new place
+    "hold_still": True,      # rest on the average of each fixation
+    "head_nudge": False,     # small head tilts move the cursor
+    "nudge_speed": 60,       # px/s per degree of tilt beyond the dead zone
+    "nudge_deadzone": 5,     # degrees of tilt that do nothing
+    "nudge_right": -1,       # the sign of the head yaw that means "right" for this person
+    "nudge_up": 1,           # the sign of the head pitch that means "up"
 }
 _GESTURE_CHOICES = {
     "left_hold": ("drag", "menu", "off"), "right_hold": ("drag", "menu", "off"),
     "left_quick": ("off", "click", "menu"), "right_quick": ("off", "click", "menu"),
     "long_close": ("off", "menu", "grab", "click"), "tracking_eye": ("auto", "both", "left", "right"),
+    "motion": ("glide", "balanced", "snappy"), "nudge_right": (-1, 1), "nudge_up": (-1, 1),
 }
 _GESTURE_RANGES = {"long_close_ms": (600, 3000), "hold_ms": (200, 1500), "long_press_ms": (500, 3000),
-                   "dwell_ms": (400, 3000)}
+                   "dwell_ms": (400, 3000), "nudge_speed": (15, 250), "nudge_deadzone": (2, 15)}
+_GESTURE_FLAGS = ("dwell", "left_forced", "right_forced", "hold_still", "head_nudge")
 
 # Reply message type of each command, so failures reach the same handler in the
 # browser as successes (the page waits for these types).
@@ -195,6 +206,8 @@ class TrackerSession:
         self._wink_offset = np.zeros(2)
         self._blink_mute_until = 0.0
         self._wink_recording: Optional[list[tuple]] = None
+        # How long the eyes have rested on the calibration dot being recorded.
+        self._settle = SettleTracker()
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
@@ -330,6 +343,8 @@ class TrackerSession:
                 "cv_error_px": meta.get("cv_error_px"),
             },
             "accuracy_px": self.profile_meta.get("accuracy_px"),
+            "pose": calibrated_pose(self.data),
+            "legacy": bool(self.model is not None and self.model.meta.get("legacy")),
             "ft_events": len(events),
             "ft_new_events": sum(1 for frames in events.values() if frames[0].t > trained_ts),
             "finetune_jobs": (p.get("finetune") or {}).get("jobs", [])[-8:],
@@ -456,6 +471,8 @@ class TrackerSession:
                     self.data.add(LabeledFrame(t=self.wall(), features=feats.vector.copy(), target=target,
                                                kind=label["kind"], point=point))
                     labeled = True
+                    if label["kind"] in FIXATION_KINDS:
+                        msg["settled"] = self._settle.update((label["kind"], point, target), feats.vector)
 
             msg.update(
                 face=True,
@@ -474,7 +491,10 @@ class TrackerSession:
                 thr=[round(state.close_threshold, 3), round(state.open_threshold, 3)],
                 head=[round(feats.yaw_deg, 1), round(feats.pitch_deg, 1), round(feats.roll_deg, 1)],
                 dist=round(feats.distance_cm, 1),
+                pos=[round(float(features[17]), 1), round(float(features[18]), 1)],
             )
+            if header.get("setup"):
+                msg["light"] = face_lighting(rgb, feats.face_box)
             if header.get("overlay"):
                 msg["eyes"] = overlay_points(obs.points_px, obs.image_size, feats)
             if header.get("mesh"):
@@ -629,6 +649,7 @@ class TrackerSession:
     # -- calibration ---------------------------------------------------------------
     def _cmd_calibration_start(self, cmd: dict) -> list[dict]:
         mode = cmd.get("mode", "full")
+        self._settle.reset()
         if mode == "adjust":
             if self.model is None:
                 return [{"type": "calibration_started", "ok": False, "error": "No calibration to adjust"}]
@@ -862,7 +883,7 @@ class TrackerSession:
         return self._start_finetune(auto=True)
 
     def _start_finetune(self, auto: bool) -> bool:
-        if self._job_running() or self.model is None:
+        if self._job_running() or self.model is None or self.model.meta.get("legacy"):
             return False
         champion = self.model
         snapshot = self.data.copy()
@@ -903,6 +924,9 @@ class TrackerSession:
     def _cmd_finetune(self, cmd: dict) -> list[dict]:
         if self.model is None:
             raise PersonalizationError("Calibrate first")
+        if self.model.meta.get("legacy"):
+            raise PersonalizationError("This calibration comes from an older version of Paralic: "
+                                       "do a full calibration first, then fine-tuning can improve it.")
         if self._job_running():
             return [{"type": "finetune_started", "ok": False, "error": "Already fine-tuning"}]
         self._start_finetune(auto=bool(cmd.get("auto", False)))
@@ -939,15 +963,14 @@ class TrackerSession:
             raise PersonalizationError("No gesture settings")
         g = dict(self.personal.get("gestures") or {})
         for key, value in patch.items():
-            if key in _GESTURE_CHOICES and value in _GESTURE_CHOICES[key]:
+            if isinstance(value, bool):
+                if key in _GESTURE_FLAGS:
+                    g[key] = value
+            elif key in _GESTURE_CHOICES and value in _GESTURE_CHOICES[key]:
                 g[key] = value
-            elif key in _GESTURE_RANGES and isinstance(value, (int, float)) and not isinstance(value, bool):
+            elif key in _GESTURE_RANGES and isinstance(value, (int, float)):
                 lo, hi = _GESTURE_RANGES[key]
                 g[key] = int(np.clip(value, lo, hi))
-            elif key == "dwell" and isinstance(value, bool):
-                g[key] = value
-            elif key in ("left_forced", "right_forced") and isinstance(value, bool):
-                g[key] = value
         self.personal["gestures"] = g
         self._save_personal()
         self._apply_effective()

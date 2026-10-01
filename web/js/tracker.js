@@ -125,6 +125,7 @@ export class EyeTracker extends Channel {
     this.gesture = null;
     this.overlay = false;
     this.mesh = false;      // stream the full face mesh (calibration preview only)
+    this.setup = false;     // ask for the lighting check (seating position step only)
     this.canvas = document.createElement('canvas');
     this.ctx = this.canvas.getContext('2d', { alpha: false });
     this.simulated = false;
@@ -227,6 +228,7 @@ export class EyeTracker extends Channel {
     if (this.gesture) header.gesture = this.gesture;
     if (this.overlay) header.overlay = true;
     if (this.mesh) header.mesh = true;
+    if (this.setup) header.setup = true;
     this.canvas.toBlob((blob) => {
       if (!blob || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
         if (this.inFlight === id) this.inFlight = null;
@@ -247,6 +249,7 @@ export class EyeTracker extends Channel {
  *   B        a blink (press it twice quickly to "double blink"; hold it about
  *            a second for a long close of both eyes)
  *   Q / E    hold to keep your left / right eye closed (a wink: hold to drag)
+ *   arrows   tilt the head (only while the head nudge is switched on)
  * Handy to try the website without a webcam. It emits the same events as
  * EyeTracker and still talks to the server for people and personalisation.
  */
@@ -267,6 +270,9 @@ export class SimTracker extends Channel {
     this.winkEnabled = { left: true, right: true };
     this.both = null;           // B held: {start, preFrame, ready}
     this.wink = null;           // Q / E held: {eye, start, preFrame, started}
+    this.headKeys = false;      // arrows tilt the head (set by the app while the nudge is on)
+    this.tiltKeys = new Set();  // arrow keys held
+    this.head = [0, 0, 0];      // yaw (+ = the person's left), pitch (+ = up), roll; degrees
   }
 
   async start() {
@@ -278,13 +284,21 @@ export class SimTracker extends Channel {
       if (e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]')) return null;
       return { b: 'both', q: 'left', e: 'right' }[e.key.toLowerCase()] || null;
     };
+    const ARROWS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
     this._onKey = (e) => {
+      if (this.headKeys && ARROWS.includes(e.key) && key(e) === null && !e.ctrlKey && !e.metaKey && !e.altKey
+          && !(e.target && e.target.closest && e.target.closest('input, textarea, [contenteditable]'))) {
+        e.preventDefault();
+        this.tiltKeys.add(e.key);
+        return;
+      }
       const which = key(e);
       if (!which || e.repeat) return;
       if (which === 'both') this.closeBoth();
       else this.closeOne(which);
     };
     this._onKeyUp = (e) => {
+      this.tiltKeys.delete(e.key);
       // Always release (even with a modifier held or focus in a field), or the
       // "eye" would stay closed.
       const which = { b: 'both', q: 'left', e: 'right' }[String(e.key).toLowerCase()];
@@ -294,6 +308,7 @@ export class SimTracker extends Channel {
     this._onBlur = () => {
       this.openBoth();
       if (this.wink) this.openOne(this.wink.eye);
+      this.tiltKeys.clear();
     };
     this._onVisibility = () => { if (document.hidden) this._onBlur(); };
     window.addEventListener('pointermove', this._onMove);
@@ -349,10 +364,16 @@ export class SimTracker extends Channel {
     const shut = 0.9;
     const cl = closed || (w && w.eye === 'left') ? shut : 0.12;
     const cr = closed || (w && w.eye === 'right') ? shut : 0.12;
+    // Held arrows tilt the head about 12 degrees (eased, like a real head).
+    const k = this.tiltKeys;
+    const goal = [12 * ((k.has('ArrowLeft') ? 1 : 0) - (k.has('ArrowRight') ? 1 : 0)),
+      12 * ((k.has('ArrowUp') ? 1 : 0) - (k.has('ArrowDown') ? 1 : 0)), 0];
+    this.head = this.head.map((v, i) => v + (goal[i] - v) * 0.3);
     this.emit('frame', {
       type: 'frame', id, face: true, gaze, raw: gaze, frozen: closed, labeled: !!this.label && !closed && !w,
       closure: closed ? shut : 0.12, cl, cr, closed, closing: closed, thr: [0.5, 0.35], fps: 30, ms: 0,
-      head: [0, 0, 0], dist: 60, winking: w ? w.eye : null, wink: w && w.started ? w.eye : null,
+      head: this.head.map((v) => Math.round(v * 10) / 10), dist: 60, pos: [0, 0],
+      winking: w ? w.eye : null, wink: w && w.started ? w.eye : null,
       net: w ? (w.eye === 'left' ? 'right' : 'left') : 'both',
     });
     if (this.pendingBlink && !closed && now - this.pendingBlink.end > this.blinkGapMs) {

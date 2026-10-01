@@ -525,7 +525,8 @@ a.card:hover, button.card:hover { background: var(--card-hover); }
   will-change: translate, scale;
 }
 .calib-dot.settle { scale: 0.7; }
-.calib-dot.collect { scale: 0.55; animation: dotpulse 0.5s ease-in-out infinite alternate; }
+/* Shrinks while it measures (--p: 0..1, the settled frames gathered so far). */
+.calib-dot.collect { scale: calc(0.62 - 0.3 * var(--p, 0)); animation: dotpulse 0.5s ease-in-out infinite alternate; }
 .calib-dot.done { scale: 0; transition: scale 0.2s; }
 @keyframes dotpulse { from { box-shadow: 0 0 20px rgba(94, 234, 212, 0.5); } to { box-shadow: 0 0 50px rgba(94, 234, 212, 1); } }
 .calib-text {
@@ -859,6 +860,8 @@ kbd { display: inline-block; min-width: 1.8em; padding: 1px 7px; border-radius: 
 }
 .gaze-cursor.progress .gc-progress { opacity: 1; }
 .gaze-cursor.winking .gc-ring { border-color: var(--warn); background: rgba(251, 191, 36, 0.16); }
+/* The head is nudging the cursor: a dotted ring shows it moves on its own. */
+.gaze-cursor.nudging .gc-ring { border-style: dotted; border-color: var(--accent); background: rgba(94, 234, 212, 0.14); }
 body.gaze-holding .gaze-cursor .gc-ring { border-width: 5px; border-color: var(--warn); }
 body.gaze-dragging .gaze-cursor .gc-ring { border-color: var(--warn); transform: scale(0.6); }
 .gaze-held { outline: 4px solid var(--warn) !important; outline-offset: 3px; }
@@ -1064,17 +1067,36 @@ body.gaze-dragging [data-dropzone].drop-hover,
   font-variant-numeric: tabular-nums; opacity: 0.9;
 }
 
-/* Live camera + face-mesh preview shown throughout calibration. */
+/* Live camera + face-mesh preview during calibration (mirrored, like every
+   other camera view): big while getting into position, small in a corner for
+   the instructions, hidden while a dot measures unless the face is lost. */
 .calib-cam {
-  position: fixed; top: 18px; left: 18px; width: 300px; height: 225px;
+  position: fixed; top: 18px; left: 18px; width: 240px; height: 180px;
   border-radius: 14px; overflow: hidden; background: #0b1020;
   border: 2px solid rgba(94, 234, 212, 0.5); box-shadow: 0 8px 30px rgba(0,0,0,0.45);
-  pointer-events: none; z-index: 5;
+  pointer-events: none; z-index: 5; transition: opacity 0.25s;
 }
+.calib-cam.big { top: 55%; left: 50%; width: auto; height: min(400px, 46vh); aspect-ratio: 4 / 3; translate: -50% -50%; }
+.calib-cam.dots { opacity: 0; }
+.calib-cam.dots.lost { opacity: 1; }
+.calib-cam.dots.at-r { left: auto; right: 18px; }
+.calib-cam.dots.at-b { top: auto; bottom: 18px; }
+.calib-cam:not(.big) .face-guide { display: none; }
 .calib-cam.no-face { border-color: rgba(248, 113, 113, 0.8); }
 .calib-cam-video, .calib-cam-mesh {
-  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1);
 }
+.setup-checks {
+  position: fixed; left: 50%; top: calc(55% + min(200px, 23vh) + 18px); translate: -50% 0;
+  display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 22px; margin: 0; padding: 0;
+  list-style: none; width: min(760px, 90vw); font-size: 1.1rem; font-weight: 650; pointer-events: none;
+}
+.setup-checks li { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.setup-checks li i { width: 14px; height: 14px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); }
+.setup-checks li.ok { color: var(--ok); }
+.setup-checks li.ok i { background: var(--ok); }
+.setup-checks li.warn i { background: var(--warn); }
+.setup-hint { flex-basis: 100%; margin: 6px 0 0; text-align: center; font-size: clamp(18px, 1.5vw, 26px); color: #e2e8f0; }
 .calib-cam-video { background: #0b1020; }
 .calib-cam-label {
   position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px;

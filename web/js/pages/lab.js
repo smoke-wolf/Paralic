@@ -80,7 +80,9 @@ function overview(el, app) {
     }, 'primary');
     if (view.job_running) tune.disabled = true;
     model.append(h('div', { class: 'btn-row' }, tune,
-      app.state.simulated ? null : button('Quick adjust', 'crosshair', () => app.calibrate('adjust'))));
+      app.state.simulated ? null : button('Quick adjust', 'crosshair', () => app.calibrate('adjust')),
+      // For a helper (or anyone who can use a mouse): the pointer labels every frame.
+      app.state.simulated ? null : button('Mouse-guided tune-up', 'crosshair', () => app.calibrate('adjust-mouse'))));
     const history = (view.model_history || []).slice(-4).reverse();
     if (history.length) {
       model.append(h('ul', { class: 'lab-history' }, history.map((e) => h('li', {},

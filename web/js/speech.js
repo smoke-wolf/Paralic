@@ -9,22 +9,41 @@ export function canSpeak() {
   return 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window;
 }
 
+/**
+ * Say something (interrupting whatever is being said). Resolves when the
+ * sentence has been spoken, could not be spoken, or was interrupted — so a
+ * caller can wait for an instruction to finish before moving on.
+ */
 export function speak(text) {
   const clean = String(text || '').trim();
-  if (!clean) return;
+  if (!clean) return Promise.resolve();
   if (!canSpeak()) {
     toast('Speech is not supported in this browser', 'warn');
-    return;
+    return Promise.resolve();
   }
+  return new Promise((resolve) => {
+    try {
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(clean);
+      u.rate = RATES[getSettings().speechRate] || 1;
+      u.onend = () => resolve();
+      u.onerror = (e) => {
+        if (e.error === 'not-allowed') toast('Click anywhere once to allow speech in this browser', 'warn', 5000);
+        resolve();
+      };
+      window.speechSynthesis.speak(u);
+    } catch {
+      toast('Could not speak', 'warn');
+      resolve();
+    }
+  });
+}
+
+/** Stop speaking now. */
+export function stopSpeaking() {
   try {
-    window.speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(clean);
-    u.rate = RATES[getSettings().speechRate] || 1;
-    u.onerror = (e) => {
-      if (e.error === 'not-allowed') toast('Click anywhere once to allow speech in this browser', 'warn', 5000);
-    };
-    window.speechSynthesis.speak(u);
+    if (canSpeak()) window.speechSynthesis.cancel();
   } catch {
-    toast('Could not speak', 'warn');
+    /* ignore */
   }
 }

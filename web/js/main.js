@@ -141,12 +141,15 @@ class App {
     if (this.gaze) {
       this.gaze.personalMagnet = view.magnet || null;
       this.gaze.gestures = view.gestures || null;
+      // The cursor's jitter after smoothing sizes the "hold still" radius.
+      this.gaze.precisionPx = (view.smoothing_profile || {}).expected_jitter_px || null;
     }
     const g = view.gestures;
     if (this.tracker && this.tracker.simulated && g) {
       // Demo mode imitates the server's gesture detection with the same settings.
       this.tracker.holdMs = Number(g.hold_ms) || 350;
       this.tracker.longCloseMs = Number(g.long_close_ms) || 1000;
+      this.tracker.headKeys = !!g.head_nudge;
       if (view.winks) this.tracker.winkEnabled = { ...view.winks };
     }
     this.emit('personal', view);
@@ -470,6 +473,8 @@ class App {
     for (;;) {
       const p = await this.tracker.request({ type: 'profile_load' }, 'profile', 15000).catch(() => ({ loaded: false }));
       if (!p.loaded) {
+        // Say why a saved calibration could not be used (not just "none yet").
+        if (p.error && p.error !== 'No saved calibration') toast(`${p.error} Let’s calibrate again.`, 'warn', 9000);
         await this.askToCalibrate(ov);
         return;
       }
@@ -479,11 +484,13 @@ class App {
       const name = this.state.person ? this.state.person.name : '';
       const choice = await this.choose(ov, {
         title: name ? `Welcome back, ${name}!` : 'Welcome back!',
-        subtitle: 'Your saved calibration is loaded. Look at an option and blink twice.',
+        subtitle: p.legacy
+          ? 'Your calibration comes from an older version of Paralic. It still works, but a new full calibration will be more accurate.'
+          : 'Your saved calibration is loaded. Look at an option and blink twice.',
         choices: [
           { id: 'browse', label: 'Start browsing', sub: 'Use the saved calibration as is', icon: 'arrowRight' },
-          { id: 'adjust', label: 'Quick adjust', sub: '5 dots, about 8 seconds (recommended)', icon: 'crosshair', primary: true },
-          { id: 'full', label: 'Full calibration', sub: 'About 40 seconds', icon: 'refresh' },
+          { id: 'adjust', label: 'Quick adjust', sub: '9 dots, about 20 seconds' + (p.legacy ? '' : ' (recommended)'), icon: 'crosshair', primary: !p.legacy },
+          { id: 'full', label: 'Full calibration', sub: 'About a minute and a half' + (p.legacy ? ' (recommended)' : ''), icon: 'refresh', primary: !!p.legacy },
           { id: 'switch', label: 'Switch person', sub: 'Someone else is using Paralic', icon: 'head' },
         ],
       });
@@ -516,7 +523,7 @@ class App {
           h('div', { class: 'eyebrow' }, name ? `One more step, ${name}` : 'One more step'),
           h('h1', {}, 'Blink twice to calibrate'),
           h('p', { class: 'muted', style: { fontSize: '1.15rem' } },
-            'A dot will move around the screen. Follow it with your eyes — it takes about 40 seconds and teaches the neural network how your eyes look at your screen, and how you blink.'),
+            'First you get comfortable, then a dot moves around the screen: look at it until it shrinks away. It takes about a minute and a half and teaches the neural network how your eyes look at your screen, and how you blink.'),
           h('p', {}, feedback),
           h('div', { class: 'btn-row' }, btn, (this.state.people || []).length > 0 ? switchBtn : null))));
     ov.append(card);
@@ -574,8 +581,8 @@ class App {
       toast('Calibration needs the camera (demo mode uses the mouse)', 'warn');
       return null;
     }
-    if (mode === 'adjust' && !this.state.calibrated) mode = 'full';
-    if (mode === 'blink' || mode === 'wink') {
+    if ((mode === 'adjust' || mode === 'adjust-mouse') && !this.state.calibrated) mode = 'full';
+    if (mode === 'blink' || mode === 'wink' || mode === 'head') {
       try {
         return await this.calibrator.run(mode);
       } catch (err) {

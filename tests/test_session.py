@@ -20,7 +20,7 @@ def env(monkeypatch, tmp_path):
     state = {"id": 0}
 
     def frame(sx=None, sy=None, label=None, closure=0.12, face=True, overlay=False, closed=None, gesture=None,
-              mesh=False):
+              mesh=False, setup=False):
         """One camera frame; ``closed`` = "left" / "right" closes that eye (a wink)."""
         state["id"] += 1
         if face:
@@ -41,6 +41,8 @@ def env(monkeypatch, tmp_path):
             header["overlay"] = True
         if mesh:
             header["mesh"] = True
+        if setup:
+            header["setup"] = True
         if gesture:
             header["gesture"] = gesture
         out = session.handle_frame(pack_frame(header, JPEG))
@@ -76,6 +78,39 @@ def test_mesh_is_streamed_only_when_requested(env):
     assert "mesh" not in frame()[0]
     msg = frame(mesh=True)[0]
     assert "mesh" in msg and "pts" in msg["mesh"]
+
+
+def test_dots_report_how_long_the_eyes_have_rested_on_them(env):
+    session, _, _, frame, _ = env
+    session.handle_command({"type": "calibration_start", "mode": "full"})
+    a, b, c = (400, 300), (1400, 700), (700, 900)
+    for k in range(25):
+        out = frame(*a, {"x": a[0], "y": a[1], "kind": "cal", "pt": 0})
+        if k == 9:
+            assert out[0]["labeled"] and out[0]["settled"] >= 6
+    assert out[0]["settled"] >= 20
+    # The next dot: while the eyes are still on the previous one nothing counts.
+    for _ in range(5):
+        out = frame(*a, {"x": b[0], "y": b[1], "kind": "cal", "pt": 1})
+    assert out[0]["settled"] == 0
+    for _ in range(8):
+        out = frame(*b, {"x": b[0], "y": b[1], "kind": "cal", "pt": 1})
+    assert out[0]["settled"] >= 6
+    # Arriving straight away: every frame counts.
+    for _ in range(10):
+        out = frame(*c, {"x": c[0], "y": c[1], "kind": "cal", "pt": 2})
+    assert out[0]["settled"] >= 8
+    # Head steps are not fixations on a dot.
+    out = frame(*b, {"x": b[0], "y": b[1], "kind": "head", "pt": 0})
+    assert out[0]["labeled"] and "settled" not in out[0]
+
+
+def test_frames_report_the_head_position_and_lighting_when_asked(env):
+    _, _, _, frame, _ = env
+    out = frame()[0]
+    assert len(out["pos"]) == 2 and out["dist"] > 0 and "light" not in out
+    out = frame(setup=True)[0]
+    assert set(out["light"]) == {"face", "frame", "balance"}
 
 
 def test_no_face_frame(env):
@@ -466,6 +501,23 @@ def test_gesture_settings_are_validated_and_applied(env):
     assert session.users.load_personal(session.user["id"])["gestures"]["left_hold"] == "off"
     bad = session.handle_command({"type": "gestures_set"})[0]
     assert bad["type"] == "personal" and bad["ok"] is False
+
+
+def test_cursor_motion_and_head_nudge_settings(env):
+    session, *_ = env
+    g = session.personal_view()["gestures"]
+    assert g["motion"] == "balanced" and g["hold_still"] is True and g["head_nudge"] is False
+    reply = session.handle_command({"type": "gestures_set", "gestures": {
+        "motion": "glide", "hold_still": False, "head_nudge": True, "nudge_speed": 999, "nudge_deadzone": 1,
+        "nudge_right": 1, "nudge_up": -1}})[0]
+    g = reply["personal"]["gestures"]
+    assert g["motion"] == "glide" and g["hold_still"] is False and g["head_nudge"] is True
+    assert g["nudge_speed"] == 250 and g["nudge_deadzone"] == 2 and g["nudge_right"] == 1 and g["nudge_up"] == -1
+    # Wrong types and values are ignored (a bool is not a number, nor a number a flag).
+    g = session.handle_command({"type": "gestures_set", "gestures": {
+        "motion": "warp", "nudge_right": 5, "nudge_up": True, "nudge_speed": True, "head_nudge": 1}})[0]["personal"]["gestures"]
+    assert g["motion"] == "glide" and g["nudge_right"] == 1 and g["nudge_up"] == -1 and g["nudge_speed"] == 250
+    assert g["head_nudge"] is True
 
 
 def test_wink_calibration_personalises_winks(env):

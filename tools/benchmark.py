@@ -25,13 +25,15 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from paralic.blink import BlinkConfig, BlinkDetector  # noqa: E402
-from paralic.calibration import CalibrationData, LabeledFrame, fit_full_calibration  # noqa: E402
+import paralic.calibration as calibration  # noqa: E402
+from paralic.calibration import (CalibrationData, LabeledFrame, SettleTracker, fit_adjustment,  # noqa: E402
+                                 fit_full_calibration, reject_outliers)
 from paralic.filters import OneEuroFilter  # noqa: E402
 from paralic.gazenet import search_configs  # noqa: E402
 from paralic.gestures import WinkDetector, analyze_winks, blink_signal, wink_config  # noqa: E402
 from paralic.personalize import (PersonalizationError, analyze_blinks, analyze_experiment,  # noqa: E402
                                  run_finetune, smoothing_params, tune_smoothing)
-from tests.synthetic import SCREEN_H, SCREEN_W, Head, VirtualUser, simulate_calibration  # noqa: E402
+from tests.synthetic import SCREEN_H, SCREEN_W, Head, VirtualUser, jitter_head, simulate_calibration  # noqa: E402
 
 FPS = 30.0
 DRIFTED = Head(x=3.0, y=13.0, dist=68.0, pitch=0.06)
@@ -45,6 +47,147 @@ def fmt(v, unit="", digits=0) -> str:
     if v is None or (isinstance(v, float) and math.isnan(v)):
         return "–"
     return f"{v:.{digits}f}{unit}"
+
+
+# ---------------------------------------------------------------------------
+# Calibration labels and quick adjust
+# ---------------------------------------------------------------------------
+
+def grid21() -> list[tuple[float, float]]:
+    """The full calibration's dots (as in web/js/calibration.js), in screen pixels:
+    the centre first (where the countdown was), then a snake over a 5x4 grid."""
+    xs, ys = [0.06, 0.28, 0.5, 0.72, 0.94], [0.08, 0.37, 0.63, 0.92]
+    pts = [(0.5 * SCREEN_W, 0.5 * SCREEN_H)]
+    for row, y in enumerate(ys):
+        for x in (xs if row % 2 == 0 else xs[::-1]):
+            pts.append((x * SCREEN_W, y * SCREEN_H))
+    return pts
+
+
+def label_session(user: VirtualUser, latency: float, glance_p: float, seed: int, settled: bool):
+    """Record the 21 dots the way the page does, with eyes that take ``latency``
+    seconds to reach each new dot (plus a short undershoot) and, with
+    probability ``glance_p``, glance at the instructions for 0.35 s.
+
+    settled=False: the old fixed window (labels from 1.34 s after the dot
+    moved, for 0.75 s). settled=True: labels from 0.6 s, until the server's
+    settled count reaches 16 frames (at most 4 s).
+    Returns (data, seconds spent on the dots).
+    """
+    rng = np.random.default_rng(seed)
+    data, t = CalibrationData(), time.time() - 3600
+    prev, total = (SCREEN_W / 2, SCREEN_H / 2), 0.0
+    tracker = SettleTracker()
+    start = 0.6 if settled else 1.34
+    for i, (sx, sy) in enumerate(grid21()):
+        lat = latency * float(np.exp(0.25 * rng.standard_normal()))
+        glance = rng.random() < glance_p
+        g0 = start + rng.uniform(0.0, 0.4)
+        k = 0
+        while True:
+            ts = start + k / FPS
+            if ts < lat:
+                gx, gy = prev
+            elif ts < lat + 0.12:
+                gx, gy = prev[0] + 0.88 * (sx - prev[0]), prev[1] + 0.88 * (sy - prev[1])
+            else:
+                gx, gy = sx, sy
+            if glance and g0 <= ts < g0 + 0.35:
+                gx, gy = SCREEN_W / 2, SCREEN_H * 0.85
+            f = user.features(gx, gy, jitter_head(rng, Head(), 0.3))
+            data.add(LabeledFrame(t=t, features=f, target=(sx, sy), kind="cal", point=i))
+            t += 1 / FPS
+            k += 1
+            if settled:
+                if tracker.update(("cal", i, (sx, sy)), f) >= 16 or k / FPS >= 4.0:
+                    break
+            elif k / FPS >= 0.75:
+                break
+        total += start + k / FPS
+        prev = (sx, sy)
+    for k in range(150):   # the head-movement step, eyes on the centre
+        ph = 2 * np.pi * k / 150
+        h = Head(x=3 * np.sin(ph), y=9 + 2 * np.sin(2 * ph), dist=60 + 2 * np.cos(ph), yaw=0.12 * np.sin(ph),
+                 pitch=0.09 * np.sin(2 * ph + 0.5))
+        data.add(LabeledFrame(t=t, features=user.features(SCREEN_W / 2, SCREEN_H / 2, h),
+                              target=(SCREEN_W / 2, SCREEN_H / 2), kind="head", point=0))
+        t += 1 / FPS
+    return data, total
+
+
+def bench_labels(n_people: int) -> dict:
+    """Fixed label window + outlier rejection (before) vs waiting for a settled
+    gaze + keeping the fixation the frames end on (now)."""
+    kinds = {"typical eyes (0.25 s to reach a dot)": (0.25, 0.0),
+             "slow eyes (0.9 s)": (0.9, 0.0),
+             "slow eyes + glances at the text": (0.9, 0.3),
+             "very slow eyes (1.3 s)": (1.3, 0.1)}
+    out = {}
+    original = calibration._group_selection
+    for name, (lat, glance) in kinds.items():
+        rows = {"before": [], "now": []}
+        secs = {"before": [], "now": []}
+        for k in range(n_people):
+            for mode in ("before", "now"):
+                user = VirtualUser(seed=60 + k)
+                data, total = label_session(user, lat, glance, seed=k, settled=(mode == "now"))
+                if mode == "before":
+                    calibration._group_selection = lambda group, F, sigma=None, previous=None: reject_outliers(F)
+                try:
+                    model, _ = fit_full_calibration(data)
+                finally:
+                    calibration._group_selection = original
+                rows[mode].append(fixation_error(model, VirtualUser(seed=60 + k)))
+                secs[mode].append(total)
+        out[name] = {m: (med(rows[m]), med(secs[m])) for m in rows}
+    return out
+
+
+ADJUST_5 = [(0.5, 0.5), (0.12, 0.14), (0.88, 0.14), (0.88, 0.86), (0.12, 0.86)]
+ADJUST_9 = [(0.5, 0.5), (0.1, 0.12), (0.5, 0.12), (0.9, 0.12), (0.9, 0.5), (0.9, 0.88), (0.5, 0.88),
+            (0.1, 0.88), (0.1, 0.5)]
+SEATED = {"moved back and down": Head(x=3.0, y=13.0, dist=68.0, pitch=0.06),
+          "leaned to the left": Head(x=-5.0, y=10.0, dist=58.0, yaw=0.08),
+          "slumped": Head(x=0.0, y=16.0, dist=64.0, pitch=0.12, roll=0.05)}
+
+
+def adjusted_error(model, user, head, points, seed) -> float:
+    """Error after a quick adjust done (and then used) sitting at ``head``."""
+    m = model.clone()
+    data = CalibrationData()
+    rng = np.random.default_rng(seed)
+    for i, (fx, fy) in enumerate(points):
+        for _ in range(16):
+            data.add(LabeledFrame(t=time.time(), features=user.features(fx * SCREEN_W, fy * SCREEN_H,
+                                                                        jitter_head(rng, head, 0.3)),
+                                  target=(fx * SCREEN_W, fy * SCREEN_H), kind="adjust", point=i))
+    fit_adjustment(m, data)
+    return fixation_error(m, user, head)
+
+
+def bench_adjust(n_people: int) -> dict:
+    """The person comes back sitting differently: quick adjust with 5 or 9
+    dots, and sitting back where they calibrated first (the position check)."""
+    out = {}
+    for name, head in SEATED.items():
+        r = {"none": [], "five": [], "nine": [], "back": []}
+        for k in range(n_people):
+            user = person(k)
+            model, _ = fit_full_calibration(calibration_data(user, seed=k))
+            r["none"].append(fixation_error(model, user, head))
+            r["five"].append(adjusted_error(model, user, head, ADJUST_5, seed=k))
+            r["nine"].append(adjusted_error(model, user, head, ADJUST_9, seed=k))
+            # Guided back by the position check: it accepts 3 cm side to side or
+            # up / down and 8 % of the distance, so the person ends up anywhere
+            # within that (here: at its edge, the least favourable case).
+            ref = Head()
+            back = Head(x=ref.x + float(np.clip(head.x - ref.x, -3, 3)),
+                        y=ref.y + float(np.clip(head.y - ref.y, -3, 3)),
+                        dist=ref.dist + float(np.clip(head.dist - ref.dist, -4.8, 4.8)),
+                        yaw=0.5 * head.yaw, pitch=0.5 * head.pitch, roll=0.5 * head.roll)
+            r["back"].append(adjusted_error(model, user, back, ADJUST_9, seed=k))
+        out[name] = {key: med(v) for key, v in r.items()}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -445,6 +588,38 @@ def report(results: dict, seconds: float) -> str:
       "mechanism does what it should and show the size of the effect in simulation; on a real person the same "
       "procedures run on that person's own data.")
     w("")
+    lb = results["labels"]
+    w("## Calibration labels: which frames show the eyes on the dot")
+    w("")
+    w("The 21-dot calibration with eyes that need some time to reach each new dot (and sometimes glance at the "
+      "instructions). *Before*: frames labelled for a fixed 0.75 s starting 1.34 s after the dot moved, outliers "
+      "rejected. *Now*: labelling starts 0.6 s after the dot moved and lasts until the server reports 16 frames of "
+      "a settled gaze on the dot (at most 4 s); training keeps the fixation the frames end on. Error of the average "
+      "prediction over a short fixation at new screen positions; time spent on the dots.")
+    w("")
+    w("| Eyes | Before | Now |")
+    w("| --- | --- | --- |")
+    for name, r in lb.items():
+        (b_err, b_s), (n_err, n_s) = r["before"], r["now"]
+        w(f"| {name} | {fmt(b_err, ' px')} ({fmt(b_s, ' s')}) | {fmt(n_err, ' px')} ({fmt(n_s, ' s')}) |")
+    w("")
+    w("Typical eyes are as accurate as before and finish sooner; slower eyes get the time they need instead of "
+      "teaching the network where the *previous* dot was.")
+    w("")
+    ad = results["adjust"]
+    w("## Quick adjust after sitting differently")
+    w("")
+    w("Calibrated sitting normally, then sitting differently. Error with no adjustment, after a quick adjust "
+      "with 5 or 9 dots, and after first moving back towards the calibrated position until the position check is "
+      "satisfied (within 3 cm side to side and up / down, 8 % of the distance; simulated at the edge of that) and "
+      "then 9 dots.")
+    w("")
+    w("| Sitting | No adjust | 5 dots | 9 dots | Back in place + 9 dots |")
+    w("| --- | --- | --- | --- | --- |")
+    for name, r in ad.items():
+        w(f"| {name} | {fmt(r['none'], ' px')} | {fmt(r['five'], ' px')} | {fmt(r['nine'], ' px')} | "
+          f"{fmt(r['back'], ' px')} |")
+    w("")
     ms = results["model_search"]
     w("## Gaze network: per-person model search")
     w("")
@@ -544,6 +719,8 @@ def main(argv=None) -> int:
     started = time.perf_counter()
     results = {}
     steps = [
+        ("labels", lambda: bench_labels(max(4, args.people // 2))),
+        ("adjust", lambda: bench_adjust(args.people)),
         ("model_search", lambda: bench_model_search(args.people)),
         ("finetune", lambda: bench_finetune(args.people)),
         ("eyes", lambda: bench_eyes(args.people)),

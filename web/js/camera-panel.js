@@ -54,9 +54,13 @@ export function drawMesh(canvas, mesh, width, height) {
   ctx.clearRect(0, 0, width, height);
   if (!mesh || !mesh.pts) return;
   const pts = mesh.pts;
+  // Sizes in screen pixels: the canvas holds the camera image's resolution but
+  // is shown (object-fit: cover) at whatever size the preview has.
+  const shown = Math.max(canvas.clientWidth / width, canvas.clientHeight / height) || 1;
+  const px = 1 / shown;
   // Light wireframe first, so the dots sit on top.
-  ctx.lineWidth = Math.max(1, width / 480);
-  ctx.strokeStyle = 'rgba(94, 234, 212, 0.55)';
+  ctx.lineWidth = 1.4 * px;
+  ctx.strokeStyle = 'rgba(94, 234, 212, 0.75)';
   for (const line of mesh.lines || []) {
     ctx.beginPath();
     line.forEach((idx, i) => {
@@ -71,7 +75,7 @@ export function drawMesh(canvas, mesh, width, height) {
   }
   // The dot cloud.
   ctx.fillStyle = 'rgba(167, 139, 250, 0.75)';
-  const r = Math.max(0.8, width / 420);
+  const r = 0.9 * px;
   for (const [x, y] of pts) {
     ctx.beginPath();
     ctx.arc(x * width, y * height, r, 0, Math.PI * 2);

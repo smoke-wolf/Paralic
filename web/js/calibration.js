@@ -1,19 +1,24 @@
 // Calibration: teach GazeNet where on the screen you are looking.
 //
-// Full calibration (about 30 seconds):
-//   1. follow a dot across 13 positions while keeping your head still,
-//   2. keep looking at the centre dot while gently moving your head
-//      (teaches the network to compensate for head movement),
+// Full calibration (about a minute and a half):
+//   0. get comfortable: the camera view with one hint at a time until the face
+//      is lit, at a good distance and in front of the camera (position.js),
+//   1. look at 21 dots in turn, head still. Each dot stays until the server
+//      reports that the eyes have rested on it (the ``settled`` count), so
+//      slower eyes get more time and nothing counts while they are still on
+//      the way; the dot shrinks as it measures,
+//   2. keep looking at the centre dot while turning, nodding and tilting the
+//      head (teaches the network to compensate for head movement),
 //   3. the server trains your personal neural network,
-//   4. five more dots measure the accuracy (and are then used for a final fit).
-//
+//   4. five more dots measure the accuracy (and are then used for a final fit),
 //   5. blink twice three times when the dot turns purple: learns how you
 //      blink (thresholds, timing, and which eye signal to watch).
 //
-// Quick tune-up (about 20 seconds): a dot glides along a smooth path while you
-// follow it with your eyes and keep the mouse pointer where you are looking; the
-// live mouse position labels every frame, and the dense data fits the affine
-// correction for today's seating position.
+// Quick adjust (about 20 seconds, eyes only): back to where you sat while
+// calibrating (the network is most accurate there), then nine dots fit a
+// correction for today. The mouse-guided tune-up ('adjust-mouse') is for a
+// helper or anyone who can use a mouse: a dot glides along a path while the
+// mouse pointer is kept where the eyes look, labelling every frame.
 //
 // Blink test / wink test: the blink step on its own, and "close your left
 // eye, now your right eye" to learn how (and whether) each eye winks.
@@ -22,43 +27,47 @@ import { h, sleep, toast } from './dom.js';
 import { icon } from './icons.js';
 import { clientToScreen, screenToClient } from './screen-space.js';
 import { sounds } from './sound.js';
-import { speak, canSpeak } from './speech.js';
+import { speak, canSpeak, stopSpeaking } from './speech.js';
 import { drawMesh } from './camera-panel.js';
+import { assessPosition } from './position.js';
 
 class Cancelled extends Error {}
 
 // A denser 5x4 grid (plus the centre) than the old 13 dots: more positions make
 // the gaze network interpolate better across the whole screen. Snake-ordered so
-// the dot only ever makes short hops.
+// the dot only ever makes short hops. Every run of dots starts in the centre,
+// where the countdown was: the eyes are already there, and each later dot can
+// tell the eyes arriving from the eyes still resting on the dot before it.
 function gridPoints() {
   const xs = [0.06, 0.28, 0.5, 0.72, 0.94];
   const ys = [0.08, 0.37, 0.63, 0.92];
-  const pts = [];
+  const pts = [[0.5, 0.5]];
   ys.forEach((y, row) => {
     const rowXs = row % 2 === 0 ? xs : [...xs].reverse(); // snake order: short hops
     rowXs.forEach((x) => pts.push([x, y]));
   });
-  pts.push([0.5, 0.5]);
   return pts;
 }
 
 const FULL_POINTS = gridPoints();
-const VALIDATION_POINTS = [[0.27, 0.28], [0.73, 0.28], [0.5, 0.55], [0.73, 0.8], [0.27, 0.8]];
-const ADJUST_POINTS = [[0.5, 0.5], [0.12, 0.14], [0.88, 0.14], [0.88, 0.86], [0.12, 0.86]];
-// Explicit face tilt / rotation sub-steps. Keeping the eyes on the centre dot
-// while the head moves teaches the network to compensate for head pose: yaw
-// (turn), pitch (nod) and roll (tilt). Each is held long enough to gather
-// frames across the movement. [text, hold ms].
+const VALIDATION_POINTS = [[0.5, 0.55], [0.27, 0.28], [0.73, 0.28], [0.73, 0.8], [0.27, 0.8]];
+// Quick adjust: the centre, then once around the edges. Nine dots fit the
+// correction better than five (benchmark: 0.21x vs 0.24x of the drift error).
+const ADJUST_POINTS = [[0.5, 0.5], [0.1, 0.12], [0.5, 0.12], [0.9, 0.12], [0.9, 0.5],
+  [0.9, 0.88], [0.5, 0.88], [0.1, 0.88], [0.1, 0.5]];
+// Head poses held while the eyes stay on the centre dot: turn (yaw), nod
+// (pitch) and tilt (roll). The straight-ahead pose is already covered by the
+// dots. Kept short: each is spoken in full before its frames are gathered.
 const HEAD_STEPS = [
-  ['Keep your eyes on the dot, and keep them there the whole time.', 2000],
-  ['Slowly turn your head to the left — eyes still on the dot.', 2600],
-  ['And slowly turn your head to the right.', 2600],
-  ['Back to centre. Now slowly tip your head up, like a small nod up.', 2600],
-  ['And slowly tip your head down.', 2600],
-  ['Back to centre. Now tilt your head towards your left shoulder.', 2600],
-  ['And tilt towards your right shoulder.', 2600],
-  ['Lovely — back to the middle. Keep looking at the dot.', 2000],
+  'Turn your head a little to the left.',
+  'Now a little to the right.',
+  'Back to the middle, and tip your head up a little.',
+  'Now tip it down a little.',
+  'Tilt your head towards your left shoulder.',
+  'Now towards your right shoulder.',
 ];
+// Frames of a settled gaze each dot needs (see collect()).
+const DOT_FRAMES = { cal: 16, val: 14, adjust: 14 };
 
 export function rateAccuracy(errorPx) {
   const rel = errorPx / Math.hypot(window.innerWidth, window.innerHeight);
@@ -93,8 +102,10 @@ export class Calibrator {
     this.startMeshPreview();
     try {
       if (mode === 'adjust') return await this.runAdjust();
+      if (mode === 'adjust-mouse') return await this.runPursuitAdjust();
       if (mode === 'blink') return await this.runBlinkTest();
       if (mode === 'wink') return await this.runWinkTest();
+      if (mode === 'head') return await this.runHeadTest();
       return await this.runFull();
     } catch (err) {
       if (err instanceof Cancelled) {
@@ -103,9 +114,12 @@ export class Calibrator {
       }
       throw err;
     } finally {
+      stopSpeaking();
+      this._lastSpoken = null;
       this.stopMeshPreview();
       this.tracker.setLabel(null);
       this.tracker.setGesturePhase(null);
+      this.tracker.setup = false;
       this.running = false;
       this.app.closeOverlay(ov);
       this.app.gaze.setSuspended(false);
@@ -117,12 +131,15 @@ export class Calibrator {
     const text = h('div', { class: 'calib-text' });
     const warning = h('div', { class: 'calib-warning', hidden: true });
     const progress = h('div', { class: 'calib-progress' });
-    // Live camera preview with the full face mesh drawn on top, shown for the
-    // whole calibration so the user can see their face and that tracking works.
+    // Live, mirrored camera preview with the face mesh drawn on top: large
+    // while getting into position, small in a corner during the instructions
+    // and head movements, and hidden while the eyes should rest on a dot (a
+    // moving face at the edge of vision draws the eyes) unless the face is lost.
     const video = h('video', { class: 'calib-cam-video', autoplay: true, muted: true, playsinline: true });
     const meshCanvas = h('canvas', { class: 'calib-cam-mesh' });
+    const faceGuide = h('div', { class: 'face-guide' });
     const camLabel = h('div', { class: 'calib-cam-label' }, 'Your face');
-    const cam = h('div', { class: 'calib-cam' }, video, meshCanvas, camLabel);
+    const cam = h('div', { class: 'calib-cam' }, video, meshCanvas, faceGuide, camLabel);
     // A ring that fills as good frames are gathered for the current step.
     const ring = h('div', { class: 'calib-ring', hidden: true },
       h('svg', { viewBox: '0 0 48 48', html:
@@ -132,10 +149,10 @@ export class Calibrator {
     // speech is off or unsupported). Lives at the bottom, out of the way.
     const transcript = h('div', { class: 'calib-transcript', 'aria-live': 'polite' });
     ov.append(dot, text, warning, progress, cam, ring, transcript);
-    return { ov, dot, text, warning, progress, transcript, cam, video, meshCanvas, ring };
+    return { ov, dot, text, warning, progress, transcript, cam, video, meshCanvas, faceGuide, ring };
   }
 
-  /** Show the camera + live face mesh for the whole calibration. */
+  /** Show the camera + live face mesh during the calibration. */
   startMeshPreview() {
     const t = this.tracker;
     if (t.simulated || !this.ui) { if (this.ui?.cam) this.ui.cam.hidden = true; return; }
@@ -162,6 +179,25 @@ export class Calibrator {
     try { if (this.ui?.video) this.ui.video.srcObject = null; } catch { /* ignore */ }
   }
 
+  /** Camera preview layout: 'big' (getting into position), 'corner', or 'dots'. */
+  setCam(mode) {
+    const cam = this.ui?.cam;
+    if (!cam) return;
+    cam.classList.remove('big', 'dots', 'lost');
+    if (mode !== 'corner') cam.classList.add(mode);
+  }
+
+  /** While dots show, keep the (normally hidden) preview in the corner
+   *  farthest from the dot, so a lost-face warning never covers it. */
+  placeCamAwayFrom(x, y) {
+    const cam = this.ui?.cam;
+    if (!cam) return;
+    const right = x < window.innerWidth / 2;
+    const bottom = y < window.innerHeight / 2;
+    cam.classList.toggle('at-r', right);
+    cam.classList.toggle('at-b', bottom);
+  }
+
   checkCancel() {
     if (this.cancelled) throw new Cancelled();
   }
@@ -181,6 +217,14 @@ export class Calibrator {
     if (title) text.append(h('h2', {}, title));
     if (body) text.append(typeof body === 'string' ? h('p', {}, body) : body);
     text.style.opacity = title || body ? '1' : '0';
+    if (!title && !body) {
+      // Cleared: the next instruction is spoken even if it repeats the last
+      // one (each "Blink twice now"), and the transcript does not linger
+      // next to the dots.
+      this._lastSpoken = null;
+      this.transcribe('');
+      return;
+    }
     // Read the instruction aloud (accessibility), synced with the on-screen
     // text and the visible transcript. Only speak real instructions, never the
     // spinner/animation bodies, and never the same line twice in a row.
@@ -192,7 +236,25 @@ export class Calibrator {
     if (!line || line === this._lastSpoken) return;
     this._lastSpoken = line;
     this.transcribe(line);
-    if (canSpeak()) speak(line);
+    this._speech = canSpeak() ? speak(line) : null;
+  }
+
+  /** Show (and speak) an instruction, then wait until it has been said - or
+   *  read, when speech is unavailable - but at most `maxMs`. */
+  async sayAndWait(title, body = '', maxMs = 4000) {
+    this._speech = null;
+    this.say(title, body, { top: true });
+    const words = `${title} ${body}`.split(/\s+/).filter(Boolean).length;
+    const reading = Math.min(maxMs, Math.max(1000, words * 220));
+    let spoken = !this._speech;
+    if (this._speech) this._speech.then(() => { spoken = true; });
+    const t0 = performance.now();
+    for (;;) {
+      this.checkCancel();
+      const elapsed = performance.now() - t0;
+      if (elapsed >= maxMs || (spoken && elapsed >= reading)) break;
+      await sleep(50);
+    }
   }
 
   /** Keep a small visible transcript of what was spoken, for anyone who can't
@@ -222,11 +284,14 @@ export class Calibrator {
       dot.style.transition = '';
     }
     dot.className = 'calib-dot';
+    dot.style.removeProperty('--p');
     return { x, y };
   }
 
+  /** Instructions with a 3-2-1 countdown in the middle of the screen, where
+   *  the first dot then appears. */
   async countdown(title, body) {
-    this.say(title, body, { top: true });
+    this.say(title, body);
     const n = h('div', { class: 'calib-count' });
     for (const k of [3, 2, 1]) {
       n.textContent = String(k);
@@ -236,16 +301,31 @@ export class Calibrator {
     n.remove();
   }
 
-  /** Label frames with the dot position until enough good frames arrived.
-   *  ``onProgress(count, minFrames)`` is called as frames are gathered (used to
-   *  fill the progress ring during the head-pose steps). */
-  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = 3000, onProgress = null } = {}) {
+  /**
+   * Label frames with the dot position until enough good frames arrived.
+   *
+   * For the dots ('cal', 'val', 'adjust') a good frame is one of a settled
+   * gaze: the server counts how many of the latest frames show the eyes
+   * resting on this dot (``settled``, 0 while they are still on the previous
+   * one), so slower eyes get more time and a glance away starts the count
+   * again. Head steps count every labelled frame. ``onProgress(n,
+   * minFrames)`` reports the count as it grows. Returns the number of
+   * labelled frames.
+   */
+  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = null, onProgress = null } = {}) {
+    const fixation = kind !== 'head';
+    const limit = maxMs ?? (fixation ? 4000 : 3000);
     let count = 0;
+    let settled = null;     // null until the server reports it (older servers don't)
     let missing = 0;
+    const good = () => (fixation && settled !== null ? settled : count);
     const off = this.tracker.on('frame', (m) => {
-      if (m.labeled) count++;
+      if (m.labeled) {
+        count++;
+        if (typeof m.settled === 'number') settled = m.settled;
+      }
       missing = m.face ? 0 : missing + 1;
-      if (onProgress) onProgress(count, minFrames);
+      if (onProgress) onProgress(good(), minFrames);
     });
     const s = clientToScreen(x, y);
     this.tracker.setLabel({ x: s.x, y: s.y, kind, pt: point });
@@ -254,11 +334,14 @@ export class Calibrator {
       for (;;) {
         await this.wait(40);
         const elapsed = performance.now() - t0;
-        this.warn(missing > 4 ? 'I can’t see your face — look at the screen and check the lighting' : null);
-        if ((elapsed >= minMs && count >= minFrames) || elapsed >= maxMs) break;
+        const lost = missing > 4;
+        this.warn(lost ? 'I can’t see your face — look at the screen and check the lighting' : null);
+        this.ui.cam?.classList.toggle('lost', lost);
+        if ((elapsed >= minMs && good() >= minFrames) || elapsed >= limit) break;
       }
     } finally {
       this.tracker.setLabel(null);
+      this.ui.cam?.classList.remove('lost');
       off();
     }
     return count;
@@ -278,38 +361,137 @@ export class Calibrator {
     ring.classList.toggle('full', f >= 1);
   }
 
-  /** A slow, visible countdown ("Hold it… 3, 2, 1") with spoken sync. */
-  async holdCountdown(seconds = 3) {
-    const n = h('div', { class: 'calib-count' });
-    this.ui.text.append(n);
-    for (let k = seconds; k >= 1; k--) {
-      n.textContent = String(k);
-      await this.wait(1000);
-    }
-    n.remove();
-  }
-
   warn(message) {
     const { warning } = this.ui;
     warning.hidden = !message;
     if (message) warning.textContent = message;
   }
 
+  /** Show the dots one by one; each shrinks while it measures. */
   async showPoints(points, kind, opts = {}) {
+    const dot = this.ui.dot;
+    const minFrames = opts.minFrames ?? DOT_FRAMES[kind] ?? 16;
+    let progress = 0;
+    const shrink = (n, min) => {
+      progress = Math.min(1, n / min);
+      dot.style.setProperty('--p', String(progress));
+    };
+    let timeouts = 0;
+    this.setCam('dots');
     this.setProgress(points.length, 0);
-    for (let i = 0; i < points.length; i++) {
-      const [fx, fy] = points[i];
-      const { x, y } = this.placeDot(fx, fy, { instant: i === 0 });
-      await this.wait(i === 0 ? 650 : 820);
-      this.ui.dot.classList.add('settle');
-      await this.wait(opts.settleMs ?? 520);
-      this.ui.dot.classList.add('collect');
-      let n = await this.collect(kind, i, x, y, opts);
-      if (n < 5) n = await this.collect(kind, i, x, y, { ...opts, maxMs: 3000 }); // one retry
-      sounds.point();
-      this.setProgress(points.length, i + 1);
+    try {
+      for (let i = 0; i < points.length; i++) {
+        const [fx, fy] = points[i];
+        const { x, y } = this.placeDot(fx, fy, { instant: i === 0 });
+        this.placeCamAwayFrom(x, y);
+        // The dot glides over (0.55 s); collection then waits for the eyes.
+        await this.wait(i === 0 ? 700 : 600);
+        dot.classList.add('collect');
+        // If the eyes never seem to settle on several dots in a row, the
+        // tracking can't tell the dots apart well (dim light, a far camera):
+        // don't make the person wait the full time on every dot.
+        const limit = timeouts >= 2 ? { maxMs: 1600 } : {};
+        progress = 0;
+        let n = await this.collect(kind, i, x, y, { ...opts, ...limit, minFrames, onProgress: shrink });
+        if (n < 5) n = await this.collect(kind, i, x, y, { ...opts, ...limit, minFrames, onProgress: shrink }); // one retry
+        timeouts = progress >= 1 ? 0 : timeouts + 1;
+        sounds.point();
+        this.setProgress(points.length, i + 1);
+      }
+    } finally {
+      dot.className = 'calib-dot done';
+      dot.style.removeProperty('--p');
+      this.setCam('corner');
     }
-    this.ui.dot.className = 'calib-dot done';
+  }
+
+  /**
+   * "Get comfortable": the big camera view with one hint at a time until the
+   * face is found, lit, at a good distance and in front of the camera - and,
+   * before a quick adjust, back where it was during the full calibration.
+   * Moves on by itself once everything has been fine for a moment. Never
+   * blocks: a double blink, a click or Space carries on at once, and after
+   * 20 seconds it carries on anyway (some people cannot move).
+   */
+  async positionCheck(mode = 'full') {
+    const t = this.tracker;
+    if (t.simulated || !this.ui) return;
+    const ref = mode === 'adjust' ? (this.app.state.personal || {}).pose || null : null;
+    const ui = this.ui;
+    const items = {
+      face: h('li', {}, h('i'), 'Face'),
+      place: h('li', {}, h('i'), ref ? 'Same place as last time' : 'Position'),
+      light: h('li', {}, h('i'), 'Light'),
+    };
+    const list = h('ul', { class: 'setup-checks' }, items.face, items.place, items.light);
+    const hint = h('p', { class: 'setup-hint' });
+    ui.ov.append(list);
+    list.append(hint);
+    this.setCam('big');
+    this.setProgress(0, 0);
+    t.setup = true;
+    let latest = null;
+    const off = t.on('frame', (m) => { latest = m; });
+    let skipped = false;
+    const skip = () => { skipped = true; };
+    const offBlink = this.app.gaze.onDoubleBlinkFirst(() => { skipped = true; return true; });
+    const onKey = (e) => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); skip(); } };
+    window.addEventListener('keydown', onKey);
+    ui.ov.addEventListener('click', skip);
+    this.say(ref ? 'Sit where you sat when you calibrated' : 'Get comfortable',
+      ref ? 'Follow the hints below — it makes the tracking more accurate. Can’t move? Blink twice to carry on.'
+        : 'Sit the way you will use the computer and face the screen. Can’t move? Blink twice to carry on.',
+      { top: true });
+    const t0 = performance.now();
+    let goodSince = null;
+    let spokenHint = '';
+    let hintSince = 0;
+    let lastHintSpoken = 0;
+    let shownHint = null;
+    try {
+      for (;;) {
+        await this.wait(80);
+        const now = performance.now();
+        const r = assessPosition(latest, ref);
+        const mark = (li, ok) => { li.className = ok ? 'ok' : 'warn'; };
+        mark(items.face, r.face);
+        mark(items.place, r.face && !r.place);
+        mark(items.light, r.face && !r.light);
+        goodSince = r.ok ? (goodSince ?? now) : null;
+        ui.faceGuide.classList.toggle('ok', r.ok);
+        const text = r.ok ? 'Perfect — stay just like that…' : r.hint;
+        if (text !== shownHint) {
+          shownHint = text;
+          hintSince = now;
+          hint.textContent = text;
+        }
+        // Say a hint once it has stayed for a moment (not every flicker).
+        if (!r.ok && text && text !== spokenHint && now - hintSince > 1200 && now - lastHintSpoken > 3500) {
+          spokenHint = text;
+          lastHintSpoken = now;
+          this.announce(text);
+        }
+        if (goodSince !== null && now - goodSince >= 1200) {
+          sounds.point();
+          break;
+        }
+        if (skipped) break;
+        if (now - t0 > 20000) {
+          toast('Carrying on — the hints will help another time.', '', 4000);
+          break;
+        }
+      }
+    } finally {
+      off();
+      offBlink();
+      window.removeEventListener('keydown', onKey);
+      ui.ov.removeEventListener('click', skip);
+      t.setup = false;
+      list.remove();
+      ui.faceGuide.classList.remove('ok');
+      this.setCam('corner');
+      this.say('');
+    }
   }
 
   // -- full calibration ---------------------------------------------------------------
@@ -318,52 +500,47 @@ export class Calibrator {
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'full' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start calibration');
 
-    await this.countdown('Follow the dot with your eyes', 'Keep your head still. Each dot shrinks while it is measuring.');
+    await this.positionCheck('full');
+    await this.countdown('Look at each dot', 'Keep your head still. Each dot shrinks while you look at it.');
     this.say('');
     await this.showPoints(FULL_POINTS, 'cal');
 
-    // Head-movement phase — deliberately slow. Each pose is held until enough
-    // good frames are actually gathered (a filling ring shows the progress), so
-    // the step never races ahead before the data is in. Short countdowns and
-    // pauses sit between steps, with the instructions spoken in sync.
+    // Head movements: eyes stay on the centre dot while the head turns, nods
+    // and tilts. Each pose is spoken in full, then held while a ring fills
+    // with frames (gated on a real frame count, so it never races ahead).
     const c = this.placeDot(0.5, 0.5);
     const guide = h('div', { class: 'head-guide', style: { left: `${c.x}px`, top: `${c.y}px` } });
     this.ui.ov.append(guide);
     this.ui.dot.classList.add('settle');
     this.setProgress(HEAD_STEPS.length, 0);
-    this.say('Now the head movements', 'Keep your eyes on the dot the whole time, and move slowly. If moving is hard, just keep looking — that is fine.', { top: true });
-    await this.wait(3200);
-    const s = clientToScreen(c.x, c.y);
+    await this.sayAndWait('Now some slow head movements',
+      'Keep your eyes on the dot the whole time. If moving is hard, just keep looking — that is fine.', 7000);
+    const ring = (n, min) => this.setRing(n / min);
     try {
       for (let i = 0; i < HEAD_STEPS.length; i++) {
-        const [step] = HEAD_STEPS[i];
+        const step = HEAD_STEPS[i];
         this.ui.dot.classList.remove('collect');
-        // Announce the move and give the person a moment to get there.
-        this.say(step, '', { top: true });
-        await this.wait(1500);
-        this.say(step, 'Hold it there…', { top: true, voice: false });
-        await this.holdCountdown(2);
-        // Now gather frames for this pose, gated on a real frame count.
+        await this.sayAndWait(step, '', 3500);
+        await this.wait(500);          // a moment to get there
         this.ui.dot.classList.add('collect');
         this.setRing(0);
-        const got = await this.collect('head', i, c.x, c.y,
-          { minFrames: 26, minMs: 1500, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
-        if (got < 8) {   // face was lost — give it one more, calmer try
+        let got = await this.collect('head', i, c.x, c.y, { minFrames: 20, minMs: 1000, maxMs: 4000, onProgress: ring });
+        if (got < 8) {                 // the face was lost: one calmer try
           this.warn(null);
-          this.say(step, 'Let’s try that one again — hold still.', { top: true });
-          await this.wait(900);
+          await this.sayAndWait(step, 'Let’s try that one again — slowly.', 3500);
           this.setRing(0);
-          await this.collect('head', i, c.x, c.y,
-            { minFrames: 20, minMs: 1200, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
+          got = await this.collect('head', i, c.x, c.y, { minFrames: 20, minMs: 1000, maxMs: 4000, onProgress: ring });
         }
-        this.setRing(1);
-        sounds.point();
-        this.setProgress(HEAD_STEPS.length, i + 1);
         this.setRing(null);
-        // A brief rest before the next move.
         this.ui.dot.classList.remove('collect');
-        this.say(step, 'Good.', { top: true, voice: false });
-        await this.wait(700);
+        if (got >= 8) {
+          sounds.point();
+          this.say(step, 'Good.', { top: true, voice: false });
+        } else {
+          this.say(step, 'Skipped — that’s fine.', { top: true, voice: false });
+        }
+        this.setProgress(HEAD_STEPS.length, i + 1);
+        await this.wait(350);
       }
     } finally {
       this.tracker.setLabel(null);
@@ -377,10 +554,9 @@ export class Calibrator {
     if (!fit) return this.runFull();
 
     // Validate.
-    this.say('Almost done', 'Look at five more dots so we can measure the accuracy.');
-    await this.wait(1500);
+    await this.countdown('Almost done', 'Look at five more dots so we can measure the accuracy.');
     this.say('');
-    await this.showPoints(VALIDATION_POINTS, 'val', { minFrames: 14 });
+    await this.showPoints(VALIDATION_POINTS, 'val');
     this.say('Measuring accuracy…', h('div', { class: 'spinner' }));
     const result = await this.tracker.request({ type: 'validation_finish' }, 'validation_result', 90000);
     if (!result.ok) {
@@ -508,9 +684,9 @@ export class Calibrator {
     if (!started || !started.ok) return null;
     this.placeDot(0.5, 0.5);
     this.ui.dot.classList.add('settle');
-    this.say('Last step: your blinks', 'Each time the dot turns purple, blink twice — like a relaxed “yes, yes”.', { top: true });
     try {
-      await this.wait(2600);
+      await this.sayAndWait('Last step: your blinks', 'Each time the dot turns purple, blink twice — like a relaxed “yes, yes”.', 6000);
+      await this.wait(400);
       for (let i = 0; i < 3; i++) {
         this.setProgress(3, i);
         this.ui.dot.classList.add('blink-now');
@@ -562,8 +738,7 @@ export class Calibrator {
       if (!started.ok) throw new Error(started.error || 'Could not start the wink test');
       this.placeDot(0.5, 0.5, { instant: true });
       this.ui.dot.classList.add('settle');
-      this.say('Let’s see how you wink', 'Look at the dot. You’ll close one eye at a time and keep it closed until the ring is full. If you can’t, that’s fine — there are other ways.', { top: true });
-      await this.wait(3600);
+      await this.sayAndWait('Let’s see how you wink', 'Look at the dot. You’ll close one eye at a time and keep it closed until the ring is full. If you can’t, that’s fine — there are other ways.', 9000);
       const ring = h('div', { class: 'wink-ring', style: { left: '50%', top: '50%' } });
       this.ui.ov.append(ring);
       let finished = false;
@@ -642,30 +817,105 @@ export class Calibrator {
     return choice;
   }
 
-  // -- quick adjust: continuous, mouse-labelled pursuit ------------------------------------
+  // -- head directions (for the head nudge) ------------------------------------------------
+  /** Turn right, then tip up: learns which way of the head pose means right and
+   *  up for this person (and camera), and how far they comfortably tilt (which
+   *  sets the dead zone), then switches the head nudge on. */
+  async runHeadTest() {
+    this.cancelled = false;
+    let latest = null;
+    const off = this.tracker.on('frame', (m) => {
+      if (m.face && Array.isArray(m.head)) latest = { head: m.head, at: performance.now() };
+    });
+    const sample = async (ms) => {
+      const rows = [];
+      const end = performance.now() + ms;
+      while (performance.now() < end) {
+        await this.wait(40);
+        if (latest && performance.now() - latest.at < 250) rows.push(latest.head);
+      }
+      return rows;
+    };
+    const median = (rows, i) => {
+      const v = rows.map((r) => r[i]).sort((a, b) => a - b);
+      return v.length ? v[v.length >> 1] : null;
+    };
+    try {
+      this.placeDot(0.5, 0.5, { instant: true });
+      this.ui.dot.classList.add('settle');
+      await this.sayAndWait('Which way is which?', 'Look at the dot with your head straight.', 5000);
+      const rest = await sample(1000);
+      await this.sayAndWait('Turn your head a little to your right', 'and hold it there.', 4000);
+      const right = await sample(1200);
+      await this.sayAndWait('Back to the middle', '', 3000);
+      const rest2 = await sample(900);
+      await this.sayAndWait('Now tip your head up a little', 'and hold it there.', 4000);
+      const up = await sample(1200);
+      this.say('');
+      const dYaw = median(right, 0) - median(rest, 0);
+      const dPitch = median(up, 1) - median(rest2, 1);
+      if (!Number.isFinite(dYaw) || !Number.isFinite(dPitch) || Math.abs(dYaw) < 3 || Math.abs(dPitch) < 3) {
+        toast('I couldn’t see your head move enough for the head nudge — it stays as it was. You can try again any time.', 'warn', 8000);
+        return { mode: 'head', fit: { ok: false } };
+      }
+      // A dead zone well inside the comfortable tilt, so small tilts are enough.
+      const reach = Math.min(Math.abs(dYaw), Math.abs(dPitch));
+      const patch = {
+        head_nudge: true,
+        nudge_right: dYaw < 0 ? -1 : 1,
+        nudge_up: dPitch < 0 ? -1 : 1,
+        nudge_deadzone: Math.round(Math.max(2, Math.min(8, 0.4 * reach))),
+      };
+      const reply = await this.tracker.request({ type: 'gestures_set', gestures: patch }, 'personal', 8000);
+      if (reply.ok === false) throw new Error(reply.error || 'could not save');
+      sounds.success();
+      toast('Head nudge is on: tilt your head a little to move the cursor, hold it straight to stop.', 'ok', 8000);
+      return { mode: 'head', fit: { ok: true, ...patch } };
+    } finally {
+      off();
+    }
+  }
+
+  // -- quick adjust (eyes only) ----------------------------------------------------------
   //
-  // A dot glides slowly along a procedural path covering the whole screen while
-  // the user follows it with their eyes AND keeps the mouse pointer where they
-  // are looking. The MOUSE position is the ground-truth label (more honest than
-  // assuming perfect dot-following): every frame, if the pointer is near the dot
-  // and moving slowly (so the user is really tracking), we label the frame with
-  // the live mouse position. The dense (eye-features -> mouse-position) pairs fit
-  // the affine correction — quick and stable, and it cannot destabilise the net.
+  // Back to the calibrated seating position, then nine dots: each network gets
+  // an affine correction for today (quick and stable, it cannot destabilise
+  // the network). Works with the eyes alone.
   async runAdjust() {
     this.cancelled = false;
     const started = await this.tracker.request({ type: 'calibration_start', mode: 'adjust' }, 'calibration_started');
     if (!started.ok) throw new Error(started.error || 'Could not start adjustment');
+    await this.positionCheck('adjust');
+    await this.countdown('Quick adjust', 'Look at each dot until it shrinks away.');
+    this.say('');
+    await this.showPoints(ADJUST_POINTS, 'adjust');
+    return this.finishAdjust();
+  }
 
-    this.say('Quick tune-up',
-      'Follow the dot with your eyes — and move the mouse so the pointer stays where you are looking.', { top: true });
-    await this.wait(4200);
+  // -- mouse-guided tune-up: continuous, mouse-labelled pursuit ----------------------------
+  //
+  // For a helper, or anyone who can use a mouse. A dot glides slowly along a
+  // procedural path covering the whole screen while the user follows it with
+  // their eyes AND keeps the mouse pointer where they are looking. The MOUSE
+  // position is the ground-truth label (more honest than assuming perfect
+  // dot-following): every frame, if the pointer is near the dot and moving
+  // slowly (so the user is really tracking), we label the frame with the live
+  // mouse position. The dense (eye-features -> mouse-position) pairs fit the
+  // affine correction.
+  async runPursuitAdjust() {
+    this.cancelled = false;
+    const started = await this.tracker.request({ type: 'calibration_start', mode: 'adjust' }, 'calibration_started');
+    if (!started.ok) throw new Error(started.error || 'Could not start adjustment');
+
+    await this.sayAndWait('Mouse-guided tune-up',
+      'Follow the dot with your eyes — and move the mouse so the pointer stays where you are looking.', 7000);
 
     let path = null;
     try { path = await this.fetchTrail('lissajous'); } catch { /* fall back below */ }
     if (!path || path.length < 2) {
-      // The trail API was unavailable: fall back to the old 5-dot adjust.
+      // The trail API was unavailable: fall back to the dots.
       this.say('');
-      await this.showPoints(ADJUST_POINTS, 'adjust', { minFrames: 14 });
+      await this.showPoints(ADJUST_POINTS, 'adjust');
       return this.finishAdjust();
     }
 

@@ -56,7 +56,7 @@ const CARDS = [
   {
     icon: 'crosshair', title: 'When the cursor drifts',
     items: [
-      'Run a Quick adjust (5 dots) from Home or Settings.',
+      'Run a Quick adjust (9 dots) from Home or Settings.',
       'If it is far off, run a Full calibration.',
       'Calibrate sitting the way you will use the computer.',
     ],

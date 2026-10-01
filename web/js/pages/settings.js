@@ -107,6 +107,34 @@ const GESTURE_GROUPS = [
   },
 ];
 
+// Per-person cursor movement (web/js/motion.js), stored like the gestures.
+const NUDGE_SPEEDS = [['35', 'Slow'], ['60', 'Normal'], ['100', 'Fast']];
+const MOTION_GROUPS = [
+  {
+    key: 'motion', title: 'Cursor movement',
+    desc: 'How the cursor travels to where you look. Glide moves gracefully and is easiest to follow; Snappy gets there fastest.',
+    options: [['glide', 'Glide'], ['balanced', 'Balanced'], ['snappy', 'Snappy']],
+  },
+  {
+    key: 'hold_still', title: 'Hold still while you look',
+    desc: 'While your eyes rest on one place, the cursor sits on the average of where you look: steadier, and closer to the spot.',
+    options: [['true', 'On'], ['false', 'Off']],
+    get: (g) => String(g.hold_still !== false),
+    set: (v) => ({ hold_still: v === 'true' }),
+  },
+  {
+    key: 'head_nudge', title: 'Head nudge',
+    desc: 'Tilt your head a little up, down, left or right to move the cursor the last bit of the way — the further you tilt, the faster it goes. Hold your head still to stop. Looking somewhere else starts afresh. (Demo mode: hold the arrow keys.)',
+    options: [['off', 'Off'], ...NUDGE_SPEEDS],
+    get: (g) => {
+      if (!g.head_nudge) return 'off';
+      const speed = Number(g.nudge_speed) || 60;
+      return NUDGE_SPEEDS.reduce((best, [v]) => (Math.abs(v - speed) < Math.abs(best - speed) ? v : best), '60');
+    },
+    set: (v) => (v === 'off' ? { head_nudge: false } : { head_nudge: true, nudge_speed: Number(v) }),
+  },
+];
+
 export default {
   title: 'Settings',
   render(el, params, app) {
@@ -137,11 +165,14 @@ export default {
         }, 'danger')));
     }
 
-    // -- eye gestures (per person) -------------------------------------------------
+    // -- cursor movement and eye gestures (per person) --------------------------------
     const person = app.state.person ? app.state.person.name : null;
-    el.append(h('h2', { class: 'section-title', html: `${icon('wink')}<span>Eye gestures${person ? ` for ${esc(person)}` : ''}</span>` }));
     const gestureRows = [];
-    for (const g of GESTURE_GROUPS) {
+    const section = (title, ic, groups) => {
+      el.append(h('h2', { class: 'section-title', html: `${icon(ic)}<span>${title}${person ? ` for ${esc(person)}` : ''}</span>` }));
+      for (const g of groups) addGesture(g);
+    };
+    const addGesture = (g) => {
       const opts = h('div', { class: 'options', role: 'radiogroup', 'aria-label': g.title });
       const note = h('p', { class: 'setting-note', hidden: true });
       for (const [value, label] of g.options) {
@@ -161,7 +192,13 @@ export default {
         h('div', {}, h('h3', {}, g.title), h('p', {}, g.desc), note), opts);
       gestureRows.push({ g, opts, note });
       el.append(row);
+    };
+    section('Cursor movement', 'move', MOTION_GROUPS);
+    if (!app.state.simulated) {
+      el.append(h('div', { class: 'btn-row', style: { marginBottom: 'var(--gap)' } },
+        actionBtn('Check head directions', 'head', () => app.calibrate('head'))));
     }
+    section('Eye gestures', 'wink', GESTURE_GROUPS);
     const paintGestures = () => {
       const view = app.state.personal || {};
       const gs = view.gestures || {};
