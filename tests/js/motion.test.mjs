@@ -166,6 +166,12 @@ test('position check: one hint at a time, most important first', () => {
   const both = assessPosition({ ...good, dist: 25, light: { face: 40, frame: 40, balance: 0 } });
   assert.match(both.hint, /lean back/);
   assert.ok(both.light && both.place && !both.ok);
+  // A reflection on glasses is a light problem (after the lamp itself).
+  const glare = assessPosition({ ...good, glare: 'left' });
+  assert.match(glare.hint, /Reflections on your glasses/);
+  assert.ok(!glare.ok && glare.light && !glare.place);
+  assert.match(assessPosition({ ...good, glare: 'both', light: { face: 40, frame: 40, balance: 0 } }).hint, /dark/);
+  assert.equal(assessPosition({ ...good, glare: null }).ok, true);
 });
 
 test('position check: back to where the calibration was done', () => {

@@ -10,6 +10,7 @@ import { GazeController } from './gaze.js';
 import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
 import { HandCalibrator } from './hand-calibration.js';
+import { attachGlassesUi, glassesAdvice } from './glasses-ui.js';
 import { say } from './mode.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
@@ -328,6 +329,7 @@ class App {
       this.emit('finetune', m);
     });
     this.tracker.on('system_control', (m) => this.onSystemControl(m));
+    if (!simulated && mode !== 'hand') attachGlassesUi(this);
     // Learn from clicks: the frames before each double-blink click are training data.
     this.gaze.addEventListener('activate', (e) => this.learnFromActivation(e.detail));
   }
@@ -775,15 +777,16 @@ class App {
       this.state.accuracy = p.accuracy_px || null;
       this.gaze.setActive(true);
       const name = this.state.person ? this.state.person.name : '';
+      const glasses = glassesAdvice(p);
       const choice = await this.choose(ov, {
         title: recognised ? `Hello, ${recognised}! I recognised you.` : name ? `Welcome back, ${name}!` : 'Welcome back!',
-        subtitle: p.legacy
+        subtitle: glasses || (p.legacy
           ? 'Your calibration comes from an older version of Paralic. It still works, but a new full calibration will be more accurate.'
-          : 'Your saved calibration is loaded. Look at an option and blink twice.',
+          : 'Your saved calibration is loaded. Look at an option and blink twice.'),
         choices: [
           { id: 'browse', label: 'Start browsing', sub: 'Use the saved calibration as is', icon: 'arrowRight' },
-          { id: 'adjust', label: 'Quick adjust', sub: '9 dots, about 20 seconds' + (p.legacy ? '' : ' (recommended)'), icon: 'crosshair', primary: !p.legacy },
-          { id: 'full', label: 'Full calibration', sub: 'About a minute and a half' + (p.legacy ? ' (recommended)' : ''), icon: 'refresh', primary: !!p.legacy },
+          { id: 'adjust', label: 'Quick adjust', sub: '9 dots, about 20 seconds' + (p.legacy && !glasses ? '' : ' (recommended)'), icon: 'crosshair', primary: !p.legacy || !!glasses },
+          { id: 'full', label: 'Full calibration', sub: 'About a minute and a half' + (p.legacy && !glasses ? ' (recommended)' : ''), icon: 'refresh', primary: !!p.legacy && !glasses },
           { id: 'switch', label: 'Switch person', sub: 'Someone else is using Paralic', icon: 'head' },
         ],
       });

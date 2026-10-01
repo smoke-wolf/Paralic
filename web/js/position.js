@@ -8,8 +8,9 @@
 //
 // Frame fields used (see paralic/session.py): `face`, `head` [yaw, pitch,
 // roll] in degrees, `dist` (cm from the camera), `pos` [x, y] (cm; x grows
-// to the right of the camera image - the person's left - and y upwards) and,
-// while the page asks for it, `light` {face, frame, balance}.
+// to the right of the camera image - the person's left - and y upwards),
+// `glare` (a reflection on a glasses lens: null, "left", "right" or "both")
+// and, while the page asks for it, `light` {face, frame, balance}.
 
 export const POSITION_LIMITS = Object.freeze({
   minDist: 35,       // cm
@@ -46,6 +47,7 @@ export function assessPosition(m, ref = null, lim = POSITION_LIMITS) {
     else if (L.frame - L.face > lim.backlight) light = 'There is bright light behind you — face the light instead';
     else if (Math.abs(L.balance) > lim.balance) light = 'Light falls from one side — try to light your face evenly';
   }
+  if (!light && m.glare) light = 'Reflections on your glasses — tilt the screen a little or move the lamp';
 
   // Camera x grows towards the person's left, so a positive offset means
   // "move to your right". Distance matters most, then side to side, then height.
