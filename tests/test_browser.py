@@ -427,6 +427,29 @@ def test_lab_shows_personalisation_and_runs_an_experiment(page):
     assert page.evaluate("window.paralic.gaze.magnetOverride") is None
 
 
+# -- eyes or hands (body.hand-mode picks the wording and controls, see web/js/mode.js) ---------
+
+def hand_mode(pg, on=True):
+    pg.evaluate(f"document.body.classList.toggle('hand-mode', {'true' if on else 'false'})")
+
+
+def test_a_pinch_picks_a_planet_up_in_hand_mode(page):
+    page.evaluate("location.hash = '#/arrange'")
+    page.wait_for_selector(".arrange-tray .arrange-card")
+    look_at(page, '.arrange-tray .arrange-card[data-planet="earth"]')
+    double_blink(page)                             # with the eyes this picks nothing up
+    assert page.locator(".drag-ghost").count() == 0
+    # Hand mode has no winks: a pinch (a double blink for the page) picks it up...
+    hand_mode(page)
+    double_blink(page)
+    assert page.locator(".drag-ghost").count() == 1
+    look_at(page, '.arrange-slot[data-slot="2"]')
+    double_blink(page)                             # ...and the next pinch puts it down
+    assert page.locator('.arrange-slot[data-slot="2"] .arrange-card[data-planet="earth"]').count() == 1
+    assert page.locator(".drag-ghost").count() == 0
+    assert "1 of 8" in page.locator(".arrange-status").text_content()
+
+
 @pytest.mark.slow
 def test_camera_flow(browser, tmp_path):
     """Full pipeline: fake webcam -> MediaPipe -> blink to start -> calibration -> browsing."""

@@ -15,6 +15,9 @@
 // * Drag lock: "Pick up to move" in the menu (or a long close) picks a thing
 //   up without holding anything; it follows your gaze until you blink twice,
 //   rest your eyes on a place (dwell) or close your eyes again to drop it.
+// * Hand mode has none of the eye gestures (a pinch arrives as a double
+//   blink): a pinch on a thing that can be moved picks it up with the drag
+//   lock, and the next pinch puts it down.
 //
 // What each gesture does is a per-person choice (Settings -> Eye gestures);
 // the server detects the gestures and the page decides what they do here.
@@ -27,6 +30,7 @@
 
 import { $$, clamp, esc, h, isVisible } from './dom.js';
 import { icon } from './icons.js';
+import { handMode } from './mode.js';
 import { sounds } from './sound.js';
 import { speak } from './speech.js';
 import { TARGET_SELECTOR } from './gaze.js';
@@ -260,9 +264,17 @@ export class GestureController {
   }
 
   onDoubleBlink(msg, entry) {
-    if (!this.lock) return false;
-    // Carrying something: a double blink drops it where you were looking.
     const point = entry && entry.x !== null ? { x: entry.x, y: entry.y } : this.gaze.point;
+    if (!this.lock) {
+      // Hand mode: a pinch on something that can be moved picks it up.
+      if (!handMode() || !this.ready() || !point) return false;
+      const el = entry ? entry.hover : this.gaze.hover;
+      const item = el && el.isConnected ? el.closest('[data-draggable]') : null;
+      if (!item) return false;
+      this.startLock(item, point);
+      return true;
+    }
+    // Carrying something: a double blink (or a pinch) drops it where you were looking.
     this.dropLock(point);
     return true;
   }
