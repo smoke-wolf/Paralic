@@ -117,7 +117,7 @@ web's). Each person's network is trained on its own platform's features, so this
   little about the gaze;
 * run it like `_start_finetune` — one background job at a time, publish under `_lock`, then
   `_record_model("manual-contrastive")`, `_save_profile()`, `_save_personal()` and push a result message;
-* the keys (Shift, ".", arrows) do not clash with existing ones: C / A / P / Esc for helpers and
-  B / Q / E for the eyelids in mouse demo mode;
+* the keys (Shift, ".", arrows) do not clash with existing ones: C / A / P / Esc and Shift+R (recording)
+  for helpers and B / Q / E for the eyelids in mouse demo mode;
 * the held-out positives are drawn per frame, and frames from one Shift-hold are near duplicates, so the
   held-out error is optimistic — split by hold (group) instead, as calibration and fine-tuning do.

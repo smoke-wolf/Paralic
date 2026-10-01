@@ -301,6 +301,37 @@ sensitivity or *Fast*, or switch to dwell click.
 | `pip` can't find `mediapipe` | Use Python 3.9–3.12 (Intel Macs need ≤ 3.12). |
 | Cursor jumpy | More smoothing, better light, recalibrate sitting still. |
 
+## Recording sessions
+
+To look closely at a session afterwards (a calibration that went wrong, blinks that were missed with
+glasses on), record it and open it in the **Paralic Inspector**:
+
+* **● Rec** in the top bar, or **Shift+R**, starts and stops recording the session in this tab. While it
+  records, the button pulses red and shows the time and size. It is a control for a helper, not a gaze
+  target, so a stray double blink never starts or stops a recording.
+* `python -m paralic --record` records every session from the start. Each page load or reconnection is
+  one recording. `--recordings-dir DIR` saves recordings somewhere other than `data/recordings/`.
+
+Each recording is a folder named `<date>-<time>-<person>-<eyes|hand>` in `data/recordings/`. It holds:
+
+* the configuration (settings, personal settings, the detectors' thresholds),
+* every camera frame's measurements and what the pipeline made of them (features, blink and wink state,
+  gaze, events),
+* the face-mesh or hand points,
+* every command, reply and gesture event,
+* the gaze network whenever it changes,
+* camera images (every 2nd frame, at most 640 px wide).
+
+That is about 24 MB per minute at 30 frames per second, or about 480 MB for 20 minutes. Camera images stop
+at 3 GB per recording, or when the disk is nearly full; everything else goes on.
+[docs/recording-format.md](docs/recording-format.md) describes the format. Open recordings in the
+Inspector with `python -m paralic.inspector`.
+
+**Privacy:** a recording contains camera images of the face, and of anyone else in view. Recordings stay
+on this computer and Paralic never uploads them. When recording starts, the page says so ("camera images
+included"). On macOS and Linux only your user account can read the folder. To delete a recording, delete
+its folder. Share a recording only with the consent of the people in it.
+
 ## Privacy
 
 Video frames go only from your browser to the Python program on the same computer. They are analysed in
@@ -311,6 +342,9 @@ in `data/users/<id>/faceprint/` on this computer, so the print can be rebuilt as
 face* or switching it off deletes them; deleting a person deletes everything of theirs. The server listens on
 `127.0.0.1` and only accepts pages served from this machine.
 
+**Recordings** are the other exception. They are off unless you switch them on, and they keep camera images
+in `data/recordings/` on this computer (see [Recording sessions](#recording-sessions)).
+
 ## Project layout
 
 ```
@@ -318,6 +352,7 @@ paralic/            Python package (server + eye and hand tracking)
   __main__.py       command line entry point (python -m paralic)
   server.py         FastAPI app: website + /ws WebSocket (?mode=hand for hand mode)
   session.py        per-connection pipeline (decode → MediaPipe → features → blink/wink → GazeNet → smoothing)
+  recorder.py       session recordings for the Paralic Inspector (docs/recording-format.md)
   tracker.py        MediaPipe FaceLandmarker wrapper
   hands.py          MediaPipe HandLandmarker wrapper
   hand_gestures.py  hand recogniser: pointing map, pinch click / scroll, the open-hand pause
@@ -343,6 +378,7 @@ web/                the website (vanilla HTML/CSS/JS modules, no build step)
   js/calibration.js calibration / validation / quick adjust / blink, wink and head-direction tests
   js/hand-calibration.js the hand setup (hand size, pointing dots, pinch, practice)
   js/mode.js        wording that follows the control mode (eyes or hand)
+  js/recording-ui.js the ● Rec button: recording the session
   js/pages/…        Home, Explore, Read, Talk, Arrange, Draw, Practice, Lab, Settings, Help
 tests/              unit, integration (real MediaPipe) and browser tests
 ```

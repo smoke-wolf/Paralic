@@ -47,6 +47,15 @@ your eyes or with your hand.
   hand, and click with a double blink or a pinch. To stop, rest the cursor in
   the top-left corner for a second, or turn it off in Settings.
 
+### Recording sessions
+- **● Rec** in the top bar (or Shift+R) records a session for the **Paralic
+  Inspector**: the configuration, every frame's measurements and what the
+  pipeline made of them, the face-mesh or hand points, commands and events,
+  the gaze network whenever it changes, and camera images.
+  `python -m paralic --record` records every session. Recordings stay on this
+  computer in `data/recordings/`; the format is in
+  `docs/recording-format.md`.
+
 ### The website
 - Explore the Solar System, read articles, and use *Talk*: spoken phrases with
   natural voices, plus an eye-typing keyboard with word prediction. Also a
