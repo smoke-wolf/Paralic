@@ -1,7 +1,8 @@
 // Paralic — application bootstrap and top-level flows (start screen, face
-// check, calibration, pause, navigation).
+// check, calibration, pause, navigation) for both ways of controlling it: the
+// eyes, or a hand (point with the index finger, pinch to click).
 
-import { $, $$, esc, h, toast } from './dom.js';
+import { $, $$, esc, h, sleep, toast } from './dom.js';
 import { clientToScreen } from './screen-space.js';
 import { icon } from './icons.js';
 import { EyeTracker, SimTracker } from './tracker.js';
@@ -9,6 +10,7 @@ import { GazeController } from './gaze.js';
 import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
 import { HandCalibrator } from './hand-calibration.js';
+import { say } from './mode.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
 import { unlockAudio } from './sound.js';
@@ -27,6 +29,26 @@ import lab from './pages/lab.js';
 
 const ROUTES = { home, explore, read, talk, practice, settings: settingsPage, help, arrange, draw, lab };
 const params = new URLSearchParams(location.search);
+const MODE_KEY = 'paralic.mode';
+
+/** The way of controlling Paralic chosen last time ('eyes' or 'hand'). */
+function lastMode() {
+  if (params.has('hands')) return 'hand';
+  if (params.has('eyes')) return 'eyes';
+  try {
+    return localStorage.getItem(MODE_KEY) === 'hand' ? 'hand' : 'eyes';
+  } catch {
+    return 'eyes';
+  }
+}
+
+function rememberMode(mode) {
+  try {
+    localStorage.setItem(MODE_KEY, mode);
+  } catch {
+    /* private window: the choice is not remembered */
+  }
+}
 
 class App {
   constructor() {
@@ -39,8 +61,9 @@ class App {
     this.camera = null;
     this.state = {
       started: false, calibrated: false, accuracy: null, simulated: false, profile: null,
-      person: null, people: [], personal: null,
+      person: null, people: [], personal: null, handMode: false, hand: null,
     };
+    this.handCalibrator = null;
 
     this.decorateNav();
     this.router = new Router(this.pageEl, ROUTES, this);
@@ -140,10 +163,12 @@ class App {
     if (!view) return;
     this.state.personal = view;
     if (this.gaze) {
-      this.gaze.personalMagnet = view.magnet || null;
+      // The magnet and jitter are learned from the eyes: a hand uses the presets.
+      const eyes = !this.state.handMode;
+      this.gaze.personalMagnet = eyes ? view.magnet || null : null;
       this.gaze.gestures = view.gestures || null;
       // The cursor's jitter after smoothing sizes the "hold still" radius.
-      this.gaze.precisionPx = (view.smoothing_profile || {}).expected_jitter_px || null;
+      this.gaze.precisionPx = eyes ? (view.smoothing_profile || {}).expected_jitter_px || null : null;
     }
     const g = view.gestures;
     if (this.tracker && this.tracker.simulated && g) {
@@ -162,7 +187,14 @@ class App {
     this.state.person = reply.user || null;
     this.state.profile = reply.profile || null;
     this.setPersonal(reply.personal);
+    if ('hand' in reply) this.setHand(reply.hand);
     this.emit('people', reply);
+  }
+
+  /** The person's saved hand setup (summary) changed or was loaded. */
+  setHand(hand) {
+    this.state.hand = hand || null;
+    this.emit('hand', this.state.hand);
   }
 
   /** Ask who is using Paralic (scanning, so it works before calibration). */
@@ -175,7 +207,7 @@ class App {
     choices.push({ id: '__new', label: 'New person', sub: 'Start a fresh profile', icon: 'sparkle' });
     const id = await this.scanChoose(ov, {
       title: 'Who’s using Paralic?',
-      subtitle: 'Blink twice when your name lights up (or click it).',
+      subtitle: say('Blink twice when your name lights up (or click it).', 'Pinch when your name lights up (or click it).'),
       choices,
     });
     const reply = id === '__new'
@@ -242,6 +274,7 @@ class App {
     this.state.handMode = mode === 'hand';
     document.body.classList.toggle('hand-mode', this.state.handMode);
     this.gaze = new GazeController(this.tracker, { cursorEl: $('#gaze-cursor'), pageEl: this.pageEl, railEl: $('#scroll-rail') });
+    this.gaze.handMode = this.state.handMode;
     this.gaze.addEventListener('activate', (e) => this.emit('activate', e.detail));
     this.gestures = new GestureController(this);
     this.gestures.attach(this.tracker);
@@ -250,21 +283,25 @@ class App {
       this.emit('pausechange', e.detail);
     });
     this.camera = new CameraPanel(this.tracker);
-    // Hand mode: pinch-drag scroll and open-palm pause arrive as their own
+    // Hand mode: pinch-drag scroll and the open-hand pause arrive as their own
     // messages (clicks reuse the double-blink path, so the cursor code is shared).
-    this.tracker.on('hand_scroll', (m) => {
-      const sc = (this.gaze && this.gaze.scrollContainer && this.gaze.scrollContainer())
-        || document.scrollingElement || document.documentElement;
-      if (sc && typeof m.dy === 'number') sc.scrollBy(0, m.dy);
-    });
-    this.tracker.on('hand_pause', (m) => {
-      if (this.gaze && this.gaze.setPaused) this.gaze.setPaused(!!m.paused);
-      toast(m.paused ? 'Paused — open palm again to resume' : 'Resumed', 'ok');
+    this.tracker.on('hand_scroll', (m) => this.gaze && this.gaze.scrollBy(m.dy));
+    this.tracker.on('hand_palm', () => {
+      // Not during the hand setup (it asks for open hands) or a choice on screen.
+      if (!this.gaze || !this.state.calibrated || (this.handCalibrator && this.handCalibrator.running)
+          || this.overlayRoot.children.length) return;
+      const paused = !this.gaze.paused;
+      this.gaze.setPaused(paused);
+      toast(paused ? 'Paused — hold up your open hand again to resume' : 'Resumed', 'ok');
     });
     this.tracker.on('fatal', (m) => this.showFatal(m.error));
     this.tracker.on('connection', ({ connected }) => {
-      if (!connected && this.state.started) toast('Lost connection to the eye tracker — reconnecting…', 'warn');
-      if (connected && this.state.started && this.state.calibrated && !simulated) this.reloadProfileAfterReconnect();
+      if (!connected && this.state.started) toast('Lost connection to the tracker — reconnecting…', 'warn');
+      if (connected && this.state.started && this.state.calibrated && !simulated) {
+        // A hand session loads the person's saved hand setup by itself.
+        if (this.state.handMode) toast('Reconnected', 'ok');
+        else this.reloadProfileAfterReconnect();
+      }
     });
     this.tracker.on('hello', (m) => {
       this.state.hello = m;
@@ -272,6 +309,7 @@ class App {
       this.state.people = m.users || [];
       this.state.person = m.user || null;
       this.setPersonal(m.personal);
+      if ('hand' in m) this.setHand(m.hand);
     });
     this.tracker.on('users', (m) => this.applyUsersReply(m));
     for (const type of ['profile', 'validation_result', 'calibration_result', 'blink_calibration_result',
@@ -320,8 +358,10 @@ class App {
     if (on) {
       if (!b) {
         b = h('div', { id: 'system-banner', class: 'system-banner' },
-          h('span', {}, '🖱️ Desktop control is ON — the cursor follows your eyes everywhere. '),
-          h('b', {}, 'To stop: look at the top-left corner for a second'), h('span', {}, ', or turn it off in Settings.'));
+          h('span', {}, say('🖱️ Desktop control is ON — the cursor follows your eyes everywhere. ',
+            '🖱️ Desktop control is ON — the cursor follows your finger everywhere. ')),
+          h('b', {}, say('To stop: look at the top-left corner for a second', 'To stop: point at the top-left corner for a second')),
+          h('span', {}, ', or turn it off in Settings.'));
         document.body.append(b);
       }
     } else if (b) {
@@ -330,7 +370,7 @@ class App {
   }
 
   learnFromActivation({ element, preFrame }) {
-    if (!element || preFrame === null || preFrame === undefined || this.state.simulated) return;
+    if (!element || preFrame === null || preFrame === undefined || this.state.simulated || this.state.handMode) return;
     if (!getSettings().learning || !this.state.calibrated) return;
     if (element.closest('.scroll-rail, .choice-row, .scan-grid, [data-no-learn]')) return;
     const r = element.getBoundingClientRect();
@@ -371,40 +411,52 @@ class App {
     const startBtn = h('button', { class: 'btn primary', type: 'button', id: 'start-btn' });
     startBtn.innerHTML = `${icon('eye')}<span>Start eye tracking</span>`;
     const handBtn = h('button', { class: 'btn', type: 'button', id: 'hand-btn' });
-    handBtn.innerHTML = `${icon('mouse')}<span>Use your hands</span>`;
+    handBtn.innerHTML = `${icon('mouse')}<span>Use your hand</span>`;
+    const handNote = h('p', { class: 'muted hand-note', hidden: true });
     const demoBtn = h('button', { class: 'btn', type: 'button', id: 'demo-btn' });
     demoBtn.innerHTML = `${icon('mouse')}<span>Try with a mouse</span>`;
+    if (lastMode() === 'hand') {
+      handBtn.classList.add('primary');
+      startBtn.classList.remove('primary');
+    }
     const tips = [
       ['camera', 'Allow camera access when your browser asks. Video never leaves this computer.'],
       ['sun', 'Light your face evenly from the front and sit about an arm’s length from the screen.'],
-      ['eye', 'Look to move the cursor. Blink twice to click. Look at the arrows on the right to scroll.'],
+      ['eye', 'With your eyes: look to move the cursor, blink twice to click, look at the arrows on the right to scroll.'],
+      ['mouse', 'With your hand: point with your index finger, pinch to click, pinch and move up or down to scroll.'],
     ];
     const card = h('div', { class: 'overlay-card' },
       h('div', { class: 'start-hero' },
         h('div', {},
           h('div', { class: 'eyebrow' }, 'Hands-free browsing'),
-          h('h1', {}, 'Browse the web with your eyes.'),
-          h('p', { class: 'lead' }, 'Paralic uses your webcam and neural networks to follow your gaze. Look to move, blink twice to click.'),
+          h('h1', {}, 'Browse the web with your eyes — or your hand.'),
+          h('p', { class: 'lead' }, 'Paralic uses your webcam and neural networks to follow your gaze or your fingertip. Look or point to move; blink twice or pinch to click.'),
           h('div', { class: 'start-actions' }, startBtn, handBtn, demoBtn),
+          handNote,
           h('ul', { class: 'start-list' }, tips.map(([ic, text]) => h('li', { html: `${icon(ic)}<span>${text}</span>` }))),
           errorBox),
         h('div', { class: 'start-visual' }, h('div', { class: 'start-eye' }))));
     ov.append(card);
 
+    this.status = null;
     const statusReady = fetch('/api/status').then((r) => r.json()).then((status) => {
+      this.status = status;
+      this.showVersion(status.version);
+      if (status.version) card.append(h('div', { class: 'version-tag' }, `Paralic ${status.version}`));
       if (status.error || !status.tracker) {
         errorBox.hidden = false;
-        errorBox.textContent = `The eye tracker could not start:\n${status.error || 'unknown error'}\n\nYou can still try the website with a mouse.`;
+        errorBox.textContent = `The eye tracker could not start:\n${status.error || 'unknown error'}\n\nYou can still use your hand or try the website with a mouse.`;
         startBtn.disabled = true;
         return false;
       }
       return true;
     }).catch(() => true);
+    this.watchHandStatus(handBtn, handNote);
 
     startBtn.addEventListener('click', () => {
       unlockAudio();
       if (!params.has('nofs')) document.documentElement.requestFullscreen?.().catch(() => {});
-      this.startTracking(ov, card, errorBox);
+      this.startTracking(ov, card, errorBox, 'eyes');
     });
     handBtn.addEventListener('click', () => {
       unlockAudio();
@@ -424,13 +476,76 @@ class App {
       this.startTracking(ov, card, errorBox, 'hand');
       return;
     }
-    // If the camera is already allowed (and the tracker is OK), start right away: no click needed.
+    // If the camera is already allowed (and the tracker is OK), start right away
+    // in the way chosen last time: no click needed.
     statusReady.then((trackerOk) => {
-      if (!trackerOk || params.has('manual')) return;
+      const mode = lastMode();
+      if ((mode === 'eyes' && !trackerOk) || params.has('manual')) return;
       navigator.permissions?.query({ name: 'camera' }).then((p) => {
-        if (p.state === 'granted' && !this.state.started && ov.isConnected) this.startTracking(ov, card, errorBox);
+        if (p.state === 'granted' && !this.state.started && ov.isConnected) this.startTracking(ov, card, errorBox, mode);
       }).catch(() => {});
     });
+  }
+
+  /** Keep the "Use your hand" button in step with the hand model (it may still be downloading). */
+  async watchHandStatus(btn, note) {
+    for (;;) {
+      let st = null;
+      try {
+        st = await (await fetch('/api/status')).json();
+      } catch {
+        return;
+      }
+      const hands = st.hands || 'unavailable';
+      btn.disabled = hands !== 'ready';
+      note.hidden = hands === 'ready';
+      note.textContent = hands === 'loading' ? 'Getting hand control ready (downloading the hand model once)…'
+        : (st.hands_error || 'Hand control is not available.');
+      if (hands !== 'loading' || !btn.isConnected) return;
+      await sleep(1500);
+    }
+  }
+
+  /** Wait (up to a minute) until hand mode is ready; false if it is not available. */
+  async handModeReady(errorBox) {
+    for (let i = 0; i < 60; i++) {
+      let st = null;
+      try {
+        st = await (await fetch('/api/status')).json();
+      } catch {
+        return true;          // let the connection report the problem
+      }
+      if (st.hands === 'ready') return true;
+      if (st.hands !== 'loading') {
+        errorBox.hidden = false;
+        errorBox.textContent = st.hands_error || 'Hand control is not available.';
+        return false;
+      }
+      errorBox.hidden = false;
+      errorBox.textContent = 'Getting hand control ready (downloading the hand model once)…';
+      await sleep(1000);
+    }
+    return false;
+  }
+
+  /** Show the version in the corner of the start screen and in Help. */
+  showVersion(version) {
+    if (!version) return;
+    this.state.version = version;
+    document.documentElement.dataset.version = version;
+    this.emit('version', version);
+  }
+
+  /** Switch between eyes and hand: remembered, then the page reloads into it. */
+  setMode(mode) {
+    const want = mode === 'hand' ? 'hand' : 'eyes';
+    rememberMode(want);
+    const url = new URL(location.href);
+    url.searchParams.delete('hands');
+    url.searchParams.delete('eyes');
+    url.searchParams.delete('demo');
+    url.searchParams.set(want === 'hand' ? 'hands' : 'eyes', '1');
+    location.href = url.toString();
   }
 
   async startTracking(ov, card, errorBox, mode = 'eyes') {
@@ -438,6 +553,12 @@ class App {
     this.state.started = true;
     unlockAudio();
     errorBox.hidden = true;
+    if (mode === 'hand' && !(await this.handModeReady(errorBox))) {
+      this.state.started = false;
+      return;
+    }
+    errorBox.hidden = true;
+    rememberMode(mode);
     if (!this.tracker || this.tracker.simulated || this.tracker.mode !== mode) this.createTracker(false, mode);
     try {
       await this.tracker.start($('#camera-video'));
@@ -536,12 +657,7 @@ class App {
     const known = this.state.handMode ? null : await this.recognise(ov);
     if (!known && (this.state.people || []).length > 1) await this.pickPerson(ov);
     if (this.state.handMode) {
-      // Hand mode: run (or reuse) the person's pointing + pinch setup.
-      await this.runHandSetup(ov);
-      this.state.calibrated = true;
-      this.gaze.setActive(true);
-      this.closeOverlay(ov);
-      this.welcome();
+      await this.enterHandMode(ov);
       return;
     }
     await this.enterAsPerson(ov, known);
@@ -591,29 +707,57 @@ class App {
     });
   }
 
-  /** Hand mode: run a fresh pointing+pinch setup, or reuse a saved one. */
-  async runHandSetup(ov) {
-    const cal = new HandCalibrator(this);
-    const saved = this.state.hello && this.state.hello.calibration;
-    let mode = 'full';
-    if (saved) {
-      this.gaze.setActive(true);
-      this.gaze.setSuspended(false);
-      const choice = await this.choose(ov, {
-        choices: [
-          { id: 'use', label: 'Use saved setup', sub: 'Keep your last hand calibration', icon: 'check', primary: true },
-          { id: 'point', label: 'Quick re-point', sub: 'Redo just the pointing dots', icon: 'mouse' },
-          { id: 'full', label: 'Full setup', sub: 'Hand span, pointing and pinch', icon: 'refresh' },
-        ],
-      }).catch(() => 'use');
-      this.gaze.setSuspended(true);
-      if (choice === 'use') {
-        await this.tracker.request({ type: 'hand_profile_use' }, 'hand_calibration_result', 8000).catch(() => {});
-        return;
+  /** Hand mode: use the person's saved hand setup, redo it, or make the first one. */
+  async enterHandMode(ov) {
+    for (;;) {
+      const name = this.state.person ? this.state.person.name : '';
+      if (!this.state.hand) {
+        this.closeOverlay(ov);
+        await this.handSetup('full');
+        break;
       }
-      mode = choice === 'point' ? 'point' : 'full';
+      // The saved setup is already in use: pointing at the choices works.
+      this.state.calibrated = true;
+      this.gaze.setActive(true);
+      const choice = await this.choose(ov, {
+        title: name ? `Welcome back, ${name}!` : 'Welcome back!',
+        subtitle: 'Your hand setup is loaded. Point at an option and pinch.',
+        choices: [
+          { id: 'browse', label: 'Start browsing', sub: 'Use the saved hand setup', icon: 'arrowRight', primary: true },
+          { id: 'point', label: 'Quick re-point', sub: 'Just the pointing dots, about 30 seconds', icon: 'crosshair' },
+          { id: 'full', label: 'Full hand setup', sub: 'Hand size, pointing and pinch', icon: 'refresh' },
+          { id: 'switch', label: 'Switch person', sub: 'Someone else is using Paralic', icon: 'head' },
+        ],
+      });
+      if (choice === 'switch') {
+        await this.pickPerson(ov);
+        continue;
+      }
+      this.closeOverlay(ov);
+      if (choice !== 'browse') await this.handSetup(choice);
+      break;
     }
-    await cal.run({ mode });
+    // Usable even without a finished setup (the raw fingertip moves the cursor).
+    this.state.calibrated = true;
+    this.gaze.setActive(true);
+    this.welcome();
+  }
+
+  /** Run the hand setup: 'full', or 'point' (re-point only, keeps the pinch). */
+  async handSetup(kind = 'full') {
+    if (!this.state.handMode || !this.tracker || this.state.simulated) {
+      toast('The hand setup needs hand mode (Settings → Control with → Hand)', 'warn');
+      return { ok: false };
+    }
+    if (!this.handCalibrator) this.handCalibrator = new HandCalibrator(this);
+    if (this.handCalibrator.running) return { ok: false };
+    if (kind === 'point' && !this.state.hand) kind = 'full';
+    if (this.gaze.paused) this.gaze.setPaused(false);
+    const r = await this.handCalibrator.run({ mode: kind });
+    this.state.calibrated = true;
+    this.gaze.setActive(true);
+    if (r.ok) this.emit('calibrated', { hand: r.result });
+    return r;
   }
 
   /** Load the current person's calibration and offer to use, adjust or redo it.
@@ -725,12 +869,19 @@ class App {
   welcome() {
     if (this.state.welcomed) return;
     this.state.welcomed = true;
-    toast('Look at anything and blink twice to click it', 'ok', 6000);
+    toast(say('Look at anything and blink twice to click it', 'Point at anything and pinch to click it'), 'ok', 6000);
   }
 
   async calibrate(mode = 'full') {
     if (!this.tracker || this.state.simulated) {
       toast('Calibration needs the camera (demo mode uses the mouse)', 'warn');
+      return null;
+    }
+    if (this.state.handMode) {
+      // The hand has its own setup; the eye tests do not apply.
+      if (mode === 'full') return this.handSetup('full');
+      if (mode === 'adjust' || mode === 'adjust-mouse') return this.handSetup('point');
+      toast('That works with eye tracking — switch in Settings → Control with', 'warn', 6000);
       return null;
     }
     // Calibrate in full screen for the largest, most accurate targets (the auto-
@@ -779,7 +930,7 @@ class App {
   showFatal(message) {
     const ov = this.openOverlay('solid');
     ov.append(h('div', { class: 'overlay-card' },
-      h('h1', {}, 'The eye tracker stopped'),
+      h('h1', {}, this.state.handMode ? 'Hand tracking stopped' : 'The eye tracker stopped'),
       h('div', { class: 'error-box' }, message || 'Unknown error'),
       h('p', { class: 'muted', style: { marginTop: '20px' } }, 'Check the terminal running Paralic for details, then reload this page.')));
   }

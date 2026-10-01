@@ -71,6 +71,7 @@ export class GazeController extends EventTarget {
     this.pressProgress = 0;
     this.lastFrameId = null;
     this.winking = null;
+    this.handMode = false;       // the cursor follows a fingertip, not the eyes
     this._dwell = { el: null, since: 0, done: false };
     this._lastT = performance.now();
     this._armTimer = null;
@@ -137,6 +138,12 @@ export class GazeController extends EventTarget {
   /** Apply the person's motion settings (gestures from the server; see GESTURE_DEFAULTS). */
   configureMotion() {
     const g = this.gestures || {};
+    if (this.handMode) {
+      // A fingertip is steady and quick: follow it closely, hold only tiny tremors.
+      this.motion.configure({ style: 'snappy', hold: true, radius: 15 });
+      this.nudge.configure({ enabled: false });
+      return;
+    }
     // Hold radius: a few times the person's cursor jitter (their smoothed precision).
     const jitter = Number(this.precisionPx) || 14;
     this.motion.configure({
@@ -243,6 +250,8 @@ export class GazeController extends EventTarget {
       if (this.doubleBlinkHandlers[i](msg, entry)) return;
     }
     if (this.paused) {
+      // In hand mode only the open hand resumes: a stray pinch must not.
+      if (msg.hand) return;
       this.setPaused(false);
       sounds.success();
       return;
@@ -483,6 +492,12 @@ export class GazeController extends EventTarget {
   scrollByPage(dir) {
     const sc = this.scrollContainer();
     sc.scrollBy({ top: dir * sc.clientHeight * 0.8, behavior: 'smooth' });
+  }
+
+  /** Hand mode's pinch-drag: scroll by `dy` CSS pixels (not while paused). */
+  scrollBy(dy) {
+    if (!this.active || this.suspended || this.paused || !Number.isFinite(dy)) return;
+    this.scrollContainer().scrollTop += dy;
   }
 }
 
