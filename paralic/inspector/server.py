@@ -213,7 +213,13 @@ def create_app(data_dir: Path, *, root: Optional[Path] = None) -> FastAPI:
     def diagnosis(rid: str) -> JSONResponse:
         from ..diagnose import diagnose
 
-        return JSONResponse(jsonable(diagnose(store.view(rid)), 3))
+        # It reads every frame: kept until the recording grows.
+        view = store.view(rid)
+        key = (view.rec.version, len(view.rec))
+        cached = getattr(view, "_diagnosis", None)
+        if cached is None or cached[0] != key:
+            cached = view._diagnosis = (key, jsonable(diagnose(view), 3))
+        return JSONResponse(cached[1])
 
     @app.get("/api/recordings/{rid}/config")
     def config(rid: str) -> JSONResponse:
