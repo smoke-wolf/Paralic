@@ -10,9 +10,13 @@ A Python server uses **neural networks** to track your eyes through an ordinary 
 * **blink twice on Pause** to rest your eyes, and blink twice again to resume.
 
 For people who find blinking or winking hard there are alternatives: **dwell click** (rest your eyes on a
-button), **closing both eyes for a second**, and a menu that can pick things up and drop them. Everything is
-**personalised per person**: each person who uses the computer gets their own gaze network, blink and wink
-thresholds and settings, which keep improving while they use the site.
+button), **closing both eyes for a second**, and a menu that can pick things up and drop them. Or use
+**your hand** instead of your eyes — point with your index finger and pinch to click (see
+[Hand mode](#hand-mode-finger-gestures)). Everything is **personalised per person**: each person who uses
+the computer gets their own gaze network, blink and wink thresholds, hand setup and settings, which keep
+improving while they use the site — and Paralic recognises who is sitting at the camera by their face.
+
+What changed in each version: [CHANGELOG.md](CHANGELOG.md).
 
 The site itself is designed for eye control: big targets, a Solar System to explore, articles to read,
 a *Talk* page with spoken phrases and an eye-typing keyboard with word prediction, a drag-and-drop game,
@@ -160,23 +164,35 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
 
 ## Hand mode (finger gestures)
 
-Prefer your hands? On the start screen choose **Use your hands** (or open
-`http://localhost:8000/?hands`). A second neural network — MediaPipe
-HandLandmarker — tracks your hand through the same webcam, and finger gestures do
-everything:
+Prefer your hand? On the start screen choose **Use your hand** (or open
+`http://localhost:8000/?hands`), and switch back any time in **Settings → Control
+with**. Paralic remembers the choice and starts that way next time. A second
+neural network — MediaPipe HandLandmarker — tracks your hand through the same
+webcam, and finger gestures do everything:
 
 | Gesture | What it does |
 | --- | --- |
 | Point your index finger | Moves the cursor (it still snaps to the nearest button). |
-| Pinch (thumb + index) | Clicks the highlighted button. |
-| Pinch and move up / down | Scrolls the page. |
-| Hold an open palm to the camera | Pauses (and open palm again to resume). |
+| Pinch (thumb + index), then let go | Clicks what the cursor pointed at just before your fingers started to close. |
+| Pinch and move your hand up / down | Scrolls the page. |
+| Hold up an open hand, fingers spread, thumb out | Pauses — and the same again resumes. A pinch never resumes, so a stray pinch can't click while paused. |
 
-Thresholds scale with your hand size, so it works at any distance from the
-camera. Hand mode runs as a completely separate pipeline from eye tracking
-(`paralic/hands.py`, `paralic/hand_gestures.py`, `paralic/hand_session.py`); the
-browser connects to the same `/ws` with `?mode=hand` and reuses the same cursor,
-snapping and click code.
+The first time, a short **hand setup** (about a minute, spoken step by step)
+learns your hand: its size, a map from the range your finger comfortably moves
+in to the whole screen (13 dots), and your own pinch — distances are split into
+"open" and "closed" with your range, so a hand that can't close fully still
+clicks reliably. It ends with a little practice (with a time limit and a Skip
+button). **Quick re-point** redoes only the dots and keeps your pinch.
+
+Everything else is shared with eye mode: the people on this computer (each with
+their own hand setup in `data/users/<id>/hand.json`), personal settings and
+desktop control. Distances are measured in palm widths, so it works at any
+distance from the camera; a hand lost for a frame or two keeps its pinch; and a
+flat pointing hand never pauses by accident. The hand model downloads in the
+background the first time (`/api/status` reports `hands: loading`), so eye mode
+never waits for it. Code: `paralic/hands.py` (tracker), `paralic/hand_gestures.py`
+(recogniser), `paralic/hand_control.py` (the per-frame pipeline and setup), used
+by `paralic/session.py` when the page connects with `/ws?mode=hand`.
 
 ## How it works
 
@@ -298,11 +314,16 @@ face* or switching it off deletes them; deleting a person deletes everything of 
 ## Project layout
 
 ```
-paralic/            Python package (server + eye tracking)
+paralic/            Python package (server + eye and hand tracking)
   __main__.py       command line entry point (python -m paralic)
-  server.py         FastAPI app: website + /ws WebSocket
+  server.py         FastAPI app: website + /ws WebSocket (?mode=hand for hand mode)
   session.py        per-connection pipeline (decode → MediaPipe → features → blink/wink → GazeNet → smoothing)
   tracker.py        MediaPipe FaceLandmarker wrapper
+  hands.py          MediaPipe HandLandmarker wrapper
+  hand_gestures.py  hand recogniser: pointing map, pinch click / scroll, the open-hand pause
+  hand_control.py   hand mode's per-frame pipeline and hand setup
+  system_control.py desktop control (opt-in) and its kill switches; oscontrol.py moves the macOS cursor
+  launcher.py       the small macOS launcher window
   features.py       landmark → feature extraction
   blink.py          blink / double-blink / long-close detector
   gestures.py       wink detector, blink signal choice, wink test analysis
@@ -320,6 +341,8 @@ web/                the website (vanilla HTML/CSS/JS modules, no build step)
   js/position.js    the seating-position check before calibrating
   js/gestures.js    press / drag / drop, the gaze menu ("right click"), drag lock
   js/calibration.js calibration / validation / quick adjust / blink, wink and head-direction tests
+  js/hand-calibration.js the hand setup (hand size, pointing dots, pinch, practice)
+  js/mode.js        wording that follows the control mode (eyes or hand)
   js/pages/…        Home, Explore, Read, Talk, Arrange, Draw, Practice, Lab, Settings, Help
 tests/              unit, integration (real MediaPipe) and browser tests
 ```
