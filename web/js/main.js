@@ -274,8 +274,44 @@ class App {
       }
       this.emit('finetune', m);
     });
+    this.tracker.on('system_control', (m) => this.onSystemControl(m));
     // Learn from clicks: the frames before each double-blink click are training data.
     this.gaze.addEventListener('activate', (e) => this.learnFromActivation(e.detail));
+  }
+
+  /** Turn whole-computer desktop control on or off. */
+  toggleSystemControl(enable) {
+    const want = enable === undefined ? !(this.state.systemControl && this.state.systemControl.enabled) : enable;
+    this.tracker.send({ type: 'system_control', enabled: want });
+  }
+
+  onSystemControl(m) {
+    this.state.systemControl = m;
+    this.emit('system_control', m);
+    if (m.enabled) {
+      this.showSystemBanner(true);
+      if (typeof speak === 'function') speak('Desktop control on');
+    } else {
+      this.showSystemBanner(false);
+      if (m.reason) toast(m.reason, m.needs_permission ? 'warn' : '', 7000);
+      if (m.needs_permission) {
+        toast('Open System Settings → Privacy & Security → Accessibility, enable your browser’s helper (or Paralic), then turn it on again.', 'warn', 11000);
+      }
+    }
+  }
+
+  showSystemBanner(on) {
+    let b = document.getElementById('system-banner');
+    if (on) {
+      if (!b) {
+        b = h('div', { id: 'system-banner', class: 'system-banner' },
+          h('span', {}, '🖱️ Desktop control is ON — the cursor follows your eyes everywhere. '),
+          h('b', {}, 'To stop: look at the top-left corner for a second'), h('span', {}, ', or turn it off in Settings.'));
+        document.body.append(b);
+      }
+    } else if (b) {
+      b.remove();
+    }
   }
 
   learnFromActivation({ element, preFrame }) {
