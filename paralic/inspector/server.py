@@ -209,6 +209,12 @@ def create_app(data_dir: Path, *, root: Optional[Path] = None) -> FastAPI:
     def calibrations(rid: str) -> JSONResponse:
         return JSONResponse(store.view(rid).calibrations())
 
+    @app.get("/api/recordings/{rid}/diagnosis")
+    def diagnosis(rid: str) -> JSONResponse:
+        from ..diagnose import diagnose
+
+        return JSONResponse(jsonable(diagnose(store.view(rid)), 3))
+
     @app.get("/api/recordings/{rid}/config")
     def config(rid: str) -> JSONResponse:
         return JSONResponse(store.view(rid).config())

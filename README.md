@@ -400,6 +400,13 @@ at 3 GB per recording, or when the disk is nearly full; everything else goes on.
 [docs/recording-format.md](docs/recording-format.md) describes the format. Open recordings in the
 Inspector with `python -m paralic.inspector`.
 
+**What limits your accuracy?** `python -m paralic.diagnose` (the newest recording, or name one) — also on the
+Inspector's Calibration panel — takes every accuracy check in a recording apart: the shift all dots share (a quick
+adjust removes it), the scatter between dots (another calibration or an improving round helps), and the noise
+floor the frame-to-frame jitter leaves (more light, sitting closer and a steady head help; more training does not),
+plus left-right against up-down and the edges against the middle. It sums up the session too — frame rate, glare,
+glasses, others in view, how much you moved, what learning from clicks did — and says what to try, in sentences.
+
 **Privacy:** a recording contains camera images of the face, and of anyone else in view. Recordings stay
 on this computer and Paralic never uploads them. When recording starts, the page says so ("camera images
 included"). On macOS and Linux only your user account can read the folder. To delete a recording, delete

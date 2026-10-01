@@ -19,8 +19,10 @@ export class CalibrationPanel {
     this.details = h('div', { class: 'cal-details' });
     this.accCanvas = h('canvas', { class: 'acc-canvas', 'aria-label': 'Accuracy over time' });
     this.accLegend = h('div', { class: 'legend' });
+    this.diag = h('div', { class: 'diag' });
     this.el = h('section', { class: 'panel calib', id: 'sec-calibration' },
       h('header', { class: 'panel-head' }, h('h2', {}, 'Calibration')),
+      this.diag,
       this.sessions,
       h('div', { class: 'cal-grid' },
         h('div', { class: 'cal-map' }, this.canvas, h('div', { class: 'legend' },
@@ -35,6 +37,7 @@ export class CalibrationPanel {
   }
 
   async load() {
+    this.loadDiagnosis();
     try {
       this.data = await api.calibrations(this.rv.id);
     } catch (err) {
@@ -47,6 +50,30 @@ export class CalibrationPanel {
       if (s.t0 <= t) this.sel = k;
     });
     this.render();
+  }
+
+  /** What limits the accuracy (paralic/diagnose.py), in sentences, with the numbers of each check. */
+  async loadDiagnosis() {
+    let d;
+    try {
+      d = await api.diagnosis(this.rv.id);
+    } catch (err) {
+      this.diag.replaceChildren(h('p', { class: 'card-note' }, `diagnosis unavailable: ${err.message}`));
+      return;
+    }
+    const checks = d.checks || [];
+    const rows = checks.map((c, k) => h('tr', {},
+      h('td', {}, `${k + 1}. ${c.mode || ''}`), h('td', {}, `${num(c.mean_error_px, 0)} px`),
+      h('td', {}, `${num(Math.hypot(...(c.shift_px || [0, 0])), 0)} px (${Math.round(100 * (c.shift_share || 0))}%)`),
+      h('td', {}, `${num(c.scatter_px, 0)} px`), h('td', {}, `${num(c.noise_floor_px, 0)} px`),
+      h('td', {}, `${num(c.horizontal_px, 0)} / ${num(c.vertical_px, 0)} px`)));
+    this.diag.replaceChildren(
+      h('h3', { class: 'sub-head' }, 'Diagnosis: what limits the accuracy'),
+      h('ul', { class: 'diag-list' }, (d.findings || []).map((f) => h('li', {}, f))),
+      checks.length ? h('table', { class: 'diag-table' },
+        h('thead', {}, h('tr', {}, ...['Check', 'Error', 'Shared shift', 'Scatter', 'Noise floor', 'Left-right / up-down']
+          .map((t) => h('th', {}, t)))),
+        h('tbody', {}, rows)) : null);
   }
 
   render() {

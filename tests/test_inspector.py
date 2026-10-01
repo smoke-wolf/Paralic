@@ -583,6 +583,8 @@ def test_the_inspector_plays_steps_and_draws_every_panel(chromium, inspector_url
         assert page.locator(".machine").count() == 2
         assert page.locator(".sens tbody tr").count() == 12
         assert page.locator(".cal-sessions .session").count() == 2
+        page.wait_for_selector(".diag-list li")              # the diagnosis, in sentences
+        assert page.locator(".diag-table tbody tr").count() == 2
         assert page.locator(".ev-table tr.ev").count() > 40
         assert page.locator(".json-tree .jl").count() > 5
         # Events: filter, then jump to one.
@@ -612,3 +614,31 @@ def test_only_this_computers_address_is_answered(tmp_path):
                      ("http://evil.example:8100", False), ("http://localhost.evil.example:8100", False)):
         r = TestClient(app, base_url=base).get("/api/recordings")
         assert (r.status_code == 200) is ok, (base, r.status_code)
+
+
+
+def test_the_diagnosis_takes_each_accuracy_check_apart(client, demos, eyes):
+    from paralic.diagnose import validation_parts
+
+    # A pure shift: everything is the shared part, which a quick adjust removes.
+    grid = [(x, y) for x in (200, 960, 1720) for y in (150, 540, 930)]
+    shifted = [{"target": [x, y], "mean": [x + 60, y - 10], "spread": 30, "n": 16} for x, y in grid]
+    v = validation_parts(shifted, {"w": 1920, "h": 1080})
+    assert v["shift_px"] == [60.0, -10.0] and v["shift_share"] == 1.0 and v["scatter_px"] == 0.0
+    assert v["noise_floor_px"] == 7.5 and v["horizontal_px"] == 60.0 and v["vertical_px"] == 10.0
+    # Up-down errors, worse at the edges.
+    rng = np.random.default_rng(0)
+    vertical = [{"target": [x, y], "mean": [x + rng.normal(0, 5), y + (70 if y != 540 else 15) * rng.choice((-1, 1))],
+                 "spread": 20, "n": 16} for x, y in grid]
+    v = validation_parts(vertical, {"w": 1920, "h": 1080})
+    assert v["vertical_px"] > 5 * v["horizontal_px"] and v["edge_px"] > 1.6 * v["middle_px"]
+    from paralic.diagnose import _findings_for
+    text = " ".join(_findings_for(v))
+    assert "Up-down" in text and "edges" in text
+    assert validation_parts([{"target": [1, 2], "mean": [3, 4]}]) is None      # too few dots
+    # The whole recording, through the API.
+    d = client.get(f"/api/recordings/{demos['eyes'].name}/diagnosis").json()
+    assert len(d["checks"]) == 2 and d["findings"] and d["conditions"]["frames"] > 1000
+    assert all(isinstance(f, str) and f for f in d["findings"])
+    hand = client.get(f"/api/recordings/{demos['hand'].name}/diagnosis").json()
+    assert hand["checks"] == [] and "No accuracy check" in hand["findings"][0]

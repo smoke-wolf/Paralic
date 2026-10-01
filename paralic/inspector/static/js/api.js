@@ -28,6 +28,7 @@ export const api = {
   timeline: (id) => json(`/api/recordings/${enc(id)}/timeline`),
   events: (id) => json(`/api/recordings/${enc(id)}/events`),
   calibrations: (id) => json(`/api/recordings/${enc(id)}/calibrations`),
+  diagnosis: (id) => json(`/api/recordings/${enc(id)}/diagnosis`),
   config: (id) => json(`/api/recordings/${enc(id)}/config`),
   videoUrl: (id, frameId) => `/api/recordings/${enc(id)}/video/${frameId}`,
 };

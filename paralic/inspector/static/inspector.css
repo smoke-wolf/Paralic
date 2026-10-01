@@ -438,3 +438,11 @@ svg.gauge .gauge-label.faint { fill: var(--faint); }
 .diff .from { color: var(--faint); text-decoration: line-through; }
 .diff .to { color: var(--text); font-weight: 650; }
 .linkish { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; }
+
+/* Calibration: the diagnosis (paralic/diagnose.py) */
+.diag { margin: 0 0 14px; }
+.diag-list { margin: 6px 0 10px; padding-left: 1.2em; line-height: 1.45; }
+.diag-list li { margin: 4px 0; }
+.diag-table { border-collapse: collapse; font-size: 0.85rem; }
+.diag-table th, .diag-table td { padding: 4px 10px; text-align: left; border-bottom: 1px solid rgba(255, 255, 255, 0.08); }
+.diag-table th { opacity: 0.7; font-weight: 600; }

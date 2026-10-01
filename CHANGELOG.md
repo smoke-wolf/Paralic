@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **Diagnosis:** `python -m paralic.diagnose`, and the Inspector's Calibration
+  panel, explain what limits the accuracy in a recording, in sentences. For
+  each accuracy check it gives the shift all dots share (a quick adjust removes
+  it), the scatter between dots, and the noise floor that frame-to-frame
+  jitter leaves, which more training cannot lower. It also compares left-right
+  with up-down and the edges with the middle, and sums up the session's
+  conditions.
+- **Security:** the app and the Inspector answer only requests made to this
+  computer's own address, so no other website can point its domain here and
+  read recordings or pages.
+- **Glasses:** a calibration made only with glasses now counts as saved in
+  the summaries. Clicks no longer fine-tune a calibration made with the
+  glasses the other way.
+
 ## 1.0.0 — 2026-10-01
 
 The first release: everything below works together in one application, with
