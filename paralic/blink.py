@@ -93,6 +93,11 @@ class BlinkDetector:
     def baseline(self) -> float:
         return self._baseline
 
+    @property
+    def closure(self) -> float:
+        """The closure score of the last update (the signal the thresholds apply to)."""
+        return self._closure
+
     def thresholds(self) -> tuple[float, float]:
         """(close threshold, open threshold).
 
