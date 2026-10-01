@@ -129,7 +129,7 @@ def bench_finetune(n_people: int) -> dict:
     ]
     for name, head, n_events, corrupt in scenarios:
         accepted = refused = 0
-        before, after, harmed = [], [], 0
+        before, after, changes = [], [], []
         for k in range(n_people):
             user = person(k)
             data = calibration_data(user, seed=k + 50)
@@ -147,9 +147,9 @@ def bench_finetune(n_people: int) -> dict:
                 a = fixation_error(new, test, head)
                 before.append(b)
                 after.append(a)
-                harmed += int(a > 1.05 * b)
+                changes.append(a - b)
         out[name] = {"accepted": accepted, "refused": refused, "n": n_people, "before_px": med(before),
-                     "after_px": med(after), "harmed": harmed}
+                     "after_px": med(after), "worst_px": max(changes) if changes else None}
     return out
 
 
@@ -466,11 +466,15 @@ def report(results: dict, seconds: float) -> str:
     w("Calibrated in one position, then the practice hits / clicks of one session. A challenger replaces the "
       "current network only if it wins on the most recent, held-out hits.")
     w("")
-    w("| Situation | Accepted | Refused (unreliable data) | Error before → after (accepted) | Made worse |")
+    w("| Situation | Accepted | Refused (unreliable data) | Median error before → after (accepted) | Worst single change |")
     w("| --- | --- | --- | --- | --- |")
     for name, r in results["finetune"].items():
         ba = f"{fmt(r['before_px'], ' px')} → {fmt(r['after_px'], ' px')}" if r["accepted"] else "–"
-        w(f"| {name} | {r['accepted']}/{r['n']} | {r['refused']}/{r['n']} | {ba} | {r['harmed']} |")
+        worst = "–" if r["worst_px"] is None else f"{r['worst_px']:+.0f} px"
+        w(f"| {name} | {r['accepted']}/{r['n']} | {r['refused']}/{r['n']} | {ba} | {worst} |")
+    w("")
+    w("When nothing changed, a swap is between two practically equal networks (the held-out test accepts at "
+      "p < 0.2 to adapt quickly when something did change), so its effect is within a few pixels either way.")
     w("")
     ey = results["eyes"]
     w("## One-eye networks")
