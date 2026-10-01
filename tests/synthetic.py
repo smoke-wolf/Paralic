@@ -74,7 +74,12 @@ class VirtualUser:
             pos = max(0.0, min(1.0, yaw / 0.5))
             up = max(0.0, min(1.0, -pitch / 0.4))
             down = max(0.0, min(1.0, pitch / 0.4))
-            return dx, dy, aperture, neg, pos, up, down
+            # Richer mesh signals: iris height between the lids (down -> lower),
+            # and squint / wide blendshapes that track looking down / up.
+            vlid = min(0.98, max(0.02, 0.5 + 0.9 * math.sin(pitch)))
+            squint = max(0.0, min(1.0, 0.45 * math.sin(pitch)))
+            wide = max(0.0, min(1.0, -0.45 * math.sin(pitch)))
+            return dx, dy, aperture, neg, pos, up, down, vlid, squint, wide
 
         R = eye(ey + w[0], ep + w[1])
         Lf = eye(ey + w[2], ep + w[3])
@@ -88,15 +93,24 @@ class VirtualUser:
             R[4] + 0.03 * nr * r(), R[3] + 0.03 * nr * r(), R[5] + 0.03 * nr * r(), R[6] + 0.03 * nr * r(),
             head.yaw + 0.01 * n * r(), head.pitch + 0.01 * n * r(), head.roll + 0.01 * n * r(),
             head.x + 0.2 * n * r(), -head.y + 0.2 * n * r(), -head.dist + 0.3 * n * r(),
+            # columns 20..27: vlid (r, l), tilt (r, l ~ head roll), squint, wide
+            R[7] + 0.02 * nr * r(), Lf[7] + 0.02 * nl * r(),
+            head.roll + 0.02 * nr * r(), head.roll + 0.02 * nl * r(),
+            R[8] + 0.03 * nr * r(), Lf[8] + 0.03 * nl * r(),
+            R[9] + 0.03 * nr * r(), Lf[9] + 0.03 * nl * r(),
         ])
         if closed is not None:
             # A shut eye: the "iris" sits low and central, the lid is closed,
-            # and the eye-movement blendshapes fade.
-            cols = {"right": (0, 1, 4, (10, 11, 12, 13)), "left": (2, 3, 5, (6, 7, 8, 9))}[closed]
+            # the eye-movement blendshapes fade, and the richer per-eye signals
+            # (vertical iris, squint, wide) go to neutral.
+            cols = {"right": (0, 1, 4, (10, 11, 12, 13), 20, (24, 26)),
+                    "left": (2, 3, 5, (6, 7, 8, 9), 21, (25, 27))}[closed]
             v[cols[0]] = 0.3 * v[cols[0]] + 0.01 * r()
             v[cols[1]] = 0.12 + 0.01 * r()
             v[cols[2]] = 0.04 + 0.005 * r()
             v[list(cols[3])] *= 0.2
+            v[cols[4]] = 0.5 + 0.01 * r()
+            v[list(cols[5])] *= 0.2
         assert v.shape == (NUM_FEATURES,)
         return v
 
