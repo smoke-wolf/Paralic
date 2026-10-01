@@ -129,6 +129,26 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
 `chrome --kiosk --autoplay-policy=no-user-gesture-required http://localhost:8000` (the autoplay flag lets the
 *Talk* page speak without a first click).
 
+## Hand mode (finger gestures)
+
+Prefer your hands? On the start screen choose **Use your hands** (or open
+`http://localhost:8000/?hands`). A second neural network — MediaPipe
+HandLandmarker — tracks your hand through the same webcam, and finger gestures do
+everything:
+
+| Gesture | What it does |
+| --- | --- |
+| Point your index finger | Moves the cursor (it still snaps to the nearest button). |
+| Pinch (thumb + index) | Clicks the highlighted button. |
+| Pinch and move up / down | Scrolls the page. |
+| Hold an open palm to the camera | Pauses (and open palm again to resume). |
+
+Thresholds scale with your hand size, so it works at any distance from the
+camera. Hand mode runs as a completely separate pipeline from eye tracking
+(`paralic/hands.py`, `paralic/hand_gestures.py`, `paralic/hand_session.py`); the
+browser connects to the same `/ws` with `?mode=hand` and reuses the same cursor,
+snapping and click code.
+
 ## How it works
 
 ```

@@ -12,7 +12,7 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__
-from .model_assets import ModelUnavailable, ensure_face_model
+from .model_assets import ModelUnavailable, ensure_face_model, ensure_hand_model
 from .server import DEFAULT_WEB_DIR, PROJECT_ROOT, create_app
 
 log = logging.getLogger("paralic")
@@ -65,6 +65,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--no-browser", action="store_true", help="don't open the browser automatically")
     parser.add_argument("--model", type=Path, default=PROJECT_ROOT / "models" / "face_landmarker.task",
                         help="path of the MediaPipe face landmarker model (downloaded if missing)")
+    parser.add_argument("--hand-model", type=Path, default=PROJECT_ROOT / "models" / "hand_landmarker.task",
+                        help="path of the MediaPipe hand landmarker model for Hand mode (downloaded if missing)")
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data",
                         help="where each person's calibration and personal settings are saved")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
@@ -94,12 +96,25 @@ def main(argv: list[str] | None = None) -> None:
     if model_error:
         log.error(model_error)
 
+    # Hand mode is optional: load its model best-effort and never block eye mode.
+    hand_tracker_factory = None
+    try:
+        hand_bytes = ensure_hand_model(args.hand_model).read_bytes()
+        from .hands import HandTracker
+
+        HandTracker(hand_bytes).close()      # fail fast if MediaPipe can't start it
+
+        def hand_tracker_factory():
+            return HandTracker(hand_bytes)
+    except Exception as exc:  # ModelUnavailable or native MediaPipe problems
+        log.warning("Hand mode unavailable: %s", exc)
+
     import uvicorn
 
     port = _pick_port(args.host, args.port)
     app = create_app(data_dir=args.data_dir, web_dir=DEFAULT_WEB_DIR,
-                     tracker_factory=tracker_factory, model_error=model_error,
-                     allowed_hosts=_allowed_hosts(args.host))
+                     tracker_factory=tracker_factory, hand_tracker_factory=hand_tracker_factory,
+                     model_error=model_error, allowed_hosts=_allowed_hosts(args.host))
 
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::", "::1") else args.host
     url = f"http://{shown_host}:{port}/"

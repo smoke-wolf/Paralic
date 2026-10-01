@@ -229,12 +229,14 @@ class App {
   }
 
   // -- tracker setup -------------------------------------------------------------------
-  createTracker(simulated) {
+  createTracker(simulated, mode = 'eyes') {
     if (this.gestures) this.gestures.detach();
     if (this.gaze) this.gaze.destroy();
     const frameWidth = Number(params.get('fw')) || 960;
-    this.tracker = simulated ? new SimTracker() : new EyeTracker({ frameWidth });
+    this.tracker = simulated ? new SimTracker() : new EyeTracker({ frameWidth, mode });
     this.state.simulated = simulated;
+    this.state.handMode = mode === 'hand';
+    document.body.classList.toggle('hand-mode', this.state.handMode);
     this.gaze = new GazeController(this.tracker, { cursorEl: $('#gaze-cursor'), pageEl: this.pageEl, railEl: $('#scroll-rail') });
     this.gaze.addEventListener('activate', (e) => this.emit('activate', e.detail));
     this.gestures = new GestureController(this);
@@ -244,6 +246,17 @@ class App {
       this.emit('pausechange', e.detail);
     });
     this.camera = new CameraPanel(this.tracker);
+    // Hand mode: pinch-drag scroll and open-palm pause arrive as their own
+    // messages (clicks reuse the double-blink path, so the cursor code is shared).
+    this.tracker.on('hand_scroll', (m) => {
+      const sc = (this.gaze && this.gaze.scrollContainer && this.gaze.scrollContainer())
+        || document.scrollingElement || document.documentElement;
+      if (sc && typeof m.dy === 'number') sc.scrollBy(0, m.dy);
+    });
+    this.tracker.on('hand_pause', (m) => {
+      if (this.gaze && this.gaze.setPaused) this.gaze.setPaused(!!m.paused);
+      toast(m.paused ? 'Paused — open palm again to resume' : 'Resumed', 'ok');
+    });
     this.tracker.on('fatal', (m) => this.showFatal(m.error));
     this.tracker.on('connection', ({ connected }) => {
       if (!connected && this.state.started) toast('Lost connection to the eye tracker — reconnecting…', 'warn');
@@ -316,6 +329,8 @@ class App {
     const errorBox = h('div', { class: 'error-box', hidden: true });
     const startBtn = h('button', { class: 'btn primary', type: 'button', id: 'start-btn' });
     startBtn.innerHTML = `${icon('eye')}<span>Start eye tracking</span>`;
+    const handBtn = h('button', { class: 'btn', type: 'button', id: 'hand-btn' });
+    handBtn.innerHTML = `${icon('mouse')}<span>Use your hands</span>`;
     const demoBtn = h('button', { class: 'btn', type: 'button', id: 'demo-btn' });
     demoBtn.innerHTML = `${icon('mouse')}<span>Try with a mouse</span>`;
     const tips = [
@@ -329,7 +344,7 @@ class App {
           h('div', { class: 'eyebrow' }, 'Hands-free browsing'),
           h('h1', {}, 'Browse the web with your eyes.'),
           h('p', { class: 'lead' }, 'Paralic uses your webcam and neural networks to follow your gaze. Look to move, blink twice to click.'),
-          h('div', { class: 'start-actions' }, startBtn, demoBtn),
+          h('div', { class: 'start-actions' }, startBtn, handBtn, demoBtn),
           h('ul', { class: 'start-list' }, tips.map(([ic, text]) => h('li', { html: `${icon(ic)}<span>${text}</span>` }))),
           errorBox),
         h('div', { class: 'start-visual' }, h('div', { class: 'start-eye' }))));
@@ -350,6 +365,11 @@ class App {
       if (!params.has('nofs')) document.documentElement.requestFullscreen?.().catch(() => {});
       this.startTracking(ov, card, errorBox);
     });
+    handBtn.addEventListener('click', () => {
+      unlockAudio();
+      if (!params.has('nofs')) document.documentElement.requestFullscreen?.().catch(() => {});
+      this.startTracking(ov, card, errorBox, 'hand');
+    });
     demoBtn.addEventListener('click', () => {
       unlockAudio();
       this.startDemo(ov);
@@ -357,6 +377,10 @@ class App {
 
     if (params.has('demo')) {
       this.startDemo(ov);
+      return;
+    }
+    if (params.has('hands')) {
+      this.startTracking(ov, card, errorBox, 'hand');
       return;
     }
     // If the camera is already allowed (and the tracker is OK), start right away: no click needed.
@@ -368,12 +392,12 @@ class App {
     });
   }
 
-  async startTracking(ov, card, errorBox) {
+  async startTracking(ov, card, errorBox, mode = 'eyes') {
     if (this.state.started) return;
     this.state.started = true;
     unlockAudio();
     errorBox.hidden = true;
-    if (!this.tracker || this.tracker.simulated) this.createTracker(false);
+    if (!this.tracker || this.tracker.simulated || this.tracker.mode !== mode) this.createTracker(false, mode);
     try {
       await this.tracker.start($('#camera-video'));
     } catch (err) {

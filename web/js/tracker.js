@@ -35,11 +35,13 @@ class Channel extends Emitter {
     this.connected = false;
     this.pending = new Map();
     this.fatal = null;
+    this.mode = 'eyes';          // 'eyes' or 'hand'
   }
 
   connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    const query = this.mode === 'hand' ? '?mode=hand' : '';
+    const ws = new WebSocket(`${proto}://${location.host}/ws${query}`);
     this.ws = ws;
     ws.onopen = () => {
       this.connected = true;
@@ -110,8 +112,9 @@ class Channel extends Emitter {
 }
 
 export class EyeTracker extends Channel {
-  constructor({ frameWidth = 960, quality = 0.82 } = {}) {
+  constructor({ frameWidth = 960, quality = 0.82, mode = 'eyes' } = {}) {
     super();
+    this.mode = mode;
     this.frameWidth = frameWidth;
     this.quality = quality;
     this.video = null;
