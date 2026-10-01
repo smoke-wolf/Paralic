@@ -21,6 +21,7 @@ import { icon } from './icons.js';
 import { clientToScreen, screenToClient } from './screen-space.js';
 import { sounds } from './sound.js';
 import { speak, canSpeak } from './speech.js';
+import { drawMesh } from './camera-panel.js';
 
 class Cancelled extends Error {}
 
@@ -87,6 +88,7 @@ export class Calibrator {
     this.app.gaze.setSuspended(true);
     const ov = this.app.openOverlay('calib solid');
     this.ui = this.buildUI(ov);
+    this.startMeshPreview();
     try {
       if (mode === 'adjust') return await this.runAdjust();
       if (mode === 'blink') return await this.runBlinkTest();
@@ -99,6 +101,7 @@ export class Calibrator {
       }
       throw err;
     } finally {
+      this.stopMeshPreview();
       this.tracker.setLabel(null);
       this.tracker.setGesturePhase(null);
       this.running = false;
@@ -112,11 +115,49 @@ export class Calibrator {
     const text = h('div', { class: 'calib-text' });
     const warning = h('div', { class: 'calib-warning', hidden: true });
     const progress = h('div', { class: 'calib-progress' });
+    // Live camera preview with the full face mesh drawn on top, shown for the
+    // whole calibration so the user can see their face and that tracking works.
+    const video = h('video', { class: 'calib-cam-video', autoplay: true, muted: true, playsinline: true });
+    const meshCanvas = h('canvas', { class: 'calib-cam-mesh' });
+    const camLabel = h('div', { class: 'calib-cam-label' }, 'Your face');
+    const cam = h('div', { class: 'calib-cam' }, video, meshCanvas, camLabel);
+    // A ring that fills as good frames are gathered for the current step.
+    const ring = h('div', { class: 'calib-ring', hidden: true },
+      h('svg', { viewBox: '0 0 48 48', html:
+        '<circle class="track" cx="24" cy="24" r="21"></circle>' +
+        '<circle class="fill" cx="24" cy="24" r="21"></circle>' }));
     // Visible transcript of the spoken guidance (accessibility; also helps when
     // speech is off or unsupported). Lives at the bottom, out of the way.
     const transcript = h('div', { class: 'calib-transcript', 'aria-live': 'polite' });
-    ov.append(dot, text, warning, progress, transcript);
-    return { ov, dot, text, warning, progress, transcript };
+    ov.append(dot, text, warning, progress, cam, ring, transcript);
+    return { ov, dot, text, warning, progress, transcript, cam, video, meshCanvas, ring };
+  }
+
+  /** Show the camera + live face mesh for the whole calibration. */
+  startMeshPreview() {
+    const t = this.tracker;
+    if (t.simulated || !this.ui) { if (this.ui?.cam) this.ui.cam.hidden = true; return; }
+    this._prevOverlay = t.overlay;
+    t.overlay = true;    // make the server compute overlay/landmarks
+    t.mesh = true;       // ask it to stream the full 478-point mesh
+    try {
+      if (t.stream) { this.ui.video.srcObject = t.stream; this.ui.video.play?.().catch(() => {}); }
+    } catch { /* preview is best-effort */ }
+    this._meshOff = t.on('frame', (m) => {
+      if (!this.ui) return;
+      const w = this.ui.video.videoWidth || 320;
+      const hgt = this.ui.video.videoHeight || 240;
+      drawMesh(this.ui.meshCanvas, m.face ? m.mesh : null, w, hgt);
+      this.ui.cam.classList.toggle('no-face', !m.face);
+    });
+  }
+
+  stopMeshPreview() {
+    if (this._meshOff) { this._meshOff(); this._meshOff = null; }
+    const t = this.tracker;
+    t.mesh = false;
+    if (this._prevOverlay !== undefined) t.overlay = this._prevOverlay;
+    try { if (this.ui?.video) this.ui.video.srcObject = null; } catch { /* ignore */ }
   }
 
   checkCancel() {
@@ -193,13 +234,16 @@ export class Calibrator {
     n.remove();
   }
 
-  /** Label frames with the dot position until enough good frames arrived. */
-  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = 3000 } = {}) {
+  /** Label frames with the dot position until enough good frames arrived.
+   *  ``onProgress(count, minFrames)`` is called as frames are gathered (used to
+   *  fill the progress ring during the head-pose steps). */
+  async collect(kind, point, x, y, { minFrames = 20, minMs = 750, maxMs = 3000, onProgress = null } = {}) {
     let count = 0;
     let missing = 0;
     const off = this.tracker.on('frame', (m) => {
       if (m.labeled) count++;
       missing = m.face ? 0 : missing + 1;
+      if (onProgress) onProgress(count, minFrames);
     });
     const s = clientToScreen(x, y);
     this.tracker.setLabel({ x: s.x, y: s.y, kind, pt: point });
@@ -216,6 +260,31 @@ export class Calibrator {
       off();
     }
     return count;
+  }
+
+  /** Show/fill/hide the circular progress ring (0..1). */
+  setRing(fraction) {
+    const ring = this.ui.ring;
+    if (!ring) return;
+    if (fraction == null) { ring.hidden = true; return; }
+    ring.hidden = false;
+    const fill = ring.querySelector('.fill');
+    const C = 2 * Math.PI * 21;    // circumference for r=21
+    const f = Math.max(0, Math.min(1, fraction));
+    fill.style.strokeDasharray = `${C}`;
+    fill.style.strokeDashoffset = `${C * (1 - f)}`;
+    ring.classList.toggle('full', f >= 1);
+  }
+
+  /** A slow, visible countdown ("Hold it… 3, 2, 1") with spoken sync. */
+  async holdCountdown(seconds = 3) {
+    const n = h('div', { class: 'calib-count' });
+    this.ui.text.append(n);
+    for (let k = seconds; k >= 1; k--) {
+      n.textContent = String(k);
+      await this.wait(1000);
+    }
+    n.remove();
   }
 
   warn(message) {
@@ -251,27 +320,52 @@ export class Calibrator {
     this.say('');
     await this.showPoints(FULL_POINTS, 'cal');
 
-    // Head-movement phase.
+    // Head-movement phase — deliberately slow. Each pose is held until enough
+    // good frames are actually gathered (a filling ring shows the progress), so
+    // the step never races ahead before the data is in. Short countdowns and
+    // pauses sit between steps, with the instructions spoken in sync.
     const c = this.placeDot(0.5, 0.5);
     const guide = h('div', { class: 'head-guide', style: { left: `${c.x}px`, top: `${c.y}px` } });
     this.ui.ov.append(guide);
     this.ui.dot.classList.add('settle');
-    this.setProgress(0, 0);
-    this.say('Now keep looking at the dot', 'and gently move your head. If moving is hard for you, just keep looking.', { top: true });
-    await this.wait(1600);
-    this.ui.dot.classList.add('collect');
+    this.setProgress(HEAD_STEPS.length, 0);
+    this.say('Now the head movements', 'Keep your eyes on the dot the whole time, and move slowly. If moving is hard, just keep looking — that is fine.', { top: true });
+    await this.wait(3200);
     const s = clientToScreen(c.x, c.y);
-    // Give each movement its own point id so grouped cross-validation can treat
-    // the pose steps as distinct groups.
     try {
       for (let i = 0; i < HEAD_STEPS.length; i++) {
-        const [step, hold] = HEAD_STEPS[i];
-        this.tracker.setLabel({ x: s.x, y: s.y, kind: 'head', pt: i });
+        const [step] = HEAD_STEPS[i];
+        this.ui.dot.classList.remove('collect');
+        // Announce the move and give the person a moment to get there.
         this.say(step, '', { top: true });
-        await this.wait(hold);
+        await this.wait(1500);
+        this.say(step, 'Hold it there…', { top: true, voice: false });
+        await this.holdCountdown(2);
+        // Now gather frames for this pose, gated on a real frame count.
+        this.ui.dot.classList.add('collect');
+        this.setRing(0);
+        const got = await this.collect('head', i, c.x, c.y,
+          { minFrames: 26, minMs: 1500, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
+        if (got < 8) {   // face was lost — give it one more, calmer try
+          this.warn(null);
+          this.say(step, 'Let’s try that one again — hold still.', { top: true });
+          await this.wait(900);
+          this.setRing(0);
+          await this.collect('head', i, c.x, c.y,
+            { minFrames: 20, minMs: 1200, maxMs: 5000, onProgress: (n, min) => this.setRing(n / min) });
+        }
+        this.setRing(1);
+        sounds.point();
+        this.setProgress(HEAD_STEPS.length, i + 1);
+        this.setRing(null);
+        // A brief rest before the next move.
+        this.ui.dot.classList.remove('collect');
+        this.say(step, 'Good.', { top: true, voice: false });
+        await this.wait(700);
       }
     } finally {
       this.tracker.setLabel(null);
+      this.setRing(null);
       guide.remove();
     }
 

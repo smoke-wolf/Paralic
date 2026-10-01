@@ -257,3 +257,23 @@ def overlay_points(points_px: np.ndarray, image_size: tuple[int, int], feats: Fr
         "li": iris(feats.left_eye),
         "box": [round(v, 4) for v in feats.face_box],
     }
+
+
+def mesh_overlay(points_px: np.ndarray, image_size: tuple[int, int]) -> dict:
+    """The full 478-point face mesh, normalised, for the calibration preview.
+
+    Returns every landmark as a normalised ``[x, y]`` point (the dot cloud that
+    reads as a "face mask"), plus ``lines``: index loops the browser connects
+    into a light wireframe (face oval, lips, eyes, brows, nose bridge). Streamed
+    only while calibrating (gated by the ``mesh`` header flag) to keep bandwidth
+    sane.
+    """
+    w, h = image_size
+    pts = np.asarray(points_px[:, :2], dtype=np.float64)
+    n = min(len(pts), L.NUM_LANDMARKS_WITH_IRIS)
+    out_pts = [[round(float(pts[i, 0] / w), 3), round(float(pts[i, 1] / h), 3)] for i in range(n)]
+    return {
+        "pts": out_pts,
+        "lines": [list(group) for group in L.MESH_OUTLINES],
+        "iris": [list(L.RIGHT_IRIS), list(L.LEFT_IRIS)],
+    }

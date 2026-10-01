@@ -1063,3 +1063,35 @@ body.gaze-dragging [data-dropzone].drop-hover,
   position: fixed; top: 3vh; right: 4vw; color: #e2e8f0; font-size: 1.4rem;
   font-variant-numeric: tabular-nums; opacity: 0.9;
 }
+
+/* Live camera + face-mesh preview shown throughout calibration. */
+.calib-cam {
+  position: fixed; top: 18px; left: 18px; width: 300px; height: 225px;
+  border-radius: 14px; overflow: hidden; background: #0b1020;
+  border: 2px solid rgba(94, 234, 212, 0.5); box-shadow: 0 8px 30px rgba(0,0,0,0.45);
+  pointer-events: none; z-index: 5;
+}
+.calib-cam.no-face { border-color: rgba(248, 113, 113, 0.8); }
+.calib-cam-video, .calib-cam-mesh {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+}
+.calib-cam-video { background: #0b1020; }
+.calib-cam-label {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 8px;
+  font-size: 0.8rem; color: #e2e8f0; background: linear-gradient(transparent, rgba(0,0,0,0.6));
+}
+.calib-cam.no-face .calib-cam-label::after { content: ' — show your face'; color: #fca5a5; }
+
+/* Filling progress ring for a held head-pose step. */
+.calib-ring {
+  position: fixed; left: 50%; bottom: 12vh; transform: translateX(-50%);
+  width: 72px; height: 72px; pointer-events: none; z-index: 6;
+}
+.calib-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.calib-ring circle { fill: none; stroke-width: 5; }
+.calib-ring .track { stroke: rgba(255,255,255,0.15); }
+.calib-ring .fill {
+  stroke: var(--accent, #5eead4); stroke-linecap: round;
+  transition: stroke-dashoffset 0.15s linear;
+}
+.calib-ring.full .fill { stroke: #86efac; }

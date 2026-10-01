@@ -5,7 +5,7 @@ import pytest
 
 from paralic import landmarks as L
 from paralic.features import (FEATURE_NAMES, FEATURE_VERSION, NUM_FEATURES, extract_features,
-                             head_pose_from_matrix, overlay_points)
+                             head_pose_from_matrix, mesh_overlay, overlay_points)
 
 
 def synthetic_face(iris_shift=(0.0, 0.0), aperture=10.0):
@@ -106,3 +106,17 @@ def test_overlay_points_are_normalised():
 def test_requires_iris_landmarks():
     with pytest.raises(ValueError):
         extract_features(np.zeros((468, 3)), (640, 480))
+
+
+def test_mesh_overlay_is_the_full_mask():
+    pts = synthetic_face()
+    mesh = mesh_overlay(pts, (640, 480))
+    # Every one of the 478 landmarks, normalised into the frame.
+    assert len(mesh["pts"]) == L.NUM_LANDMARKS_WITH_IRIS
+    assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in mesh["pts"])
+    # Wireframe loops reference valid landmark indices.
+    assert len(mesh["lines"]) >= 4
+    for line in mesh["lines"]:
+        assert len(line) >= 3
+        assert all(0 <= i < L.NUM_LANDMARKS_WITH_IRIS for i in line)
+    assert len(mesh["iris"]) == 2

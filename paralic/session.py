@@ -49,7 +49,7 @@ import numpy as np
 from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDetector, BlinkEvent
 from .calibration import (CalibrationData, CalibrationError, LabeledFrame, ProfileStore, evaluate_validation,
                           fit_adjustment, fit_eye_models, fit_full_calibration)
-from .features import extract_features, overlay_points
+from .features import extract_features, mesh_overlay, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
 from .gestures import BLINK_SIGNALS, WinkDetector, WinkEvent, analyze_winks, blink_signal, other_eye, wink_config
@@ -463,6 +463,8 @@ class TrackerSession:
             )
             if header.get("overlay"):
                 msg["eyes"] = overlay_points(obs.points_px, obs.image_size, feats)
+            if header.get("mesh"):
+                msg["mesh"] = mesh_overlay(obs.points_px, obs.image_size)
 
         self._history.append(_FrameRecord(t=t, frame_id=frame_id, closing=closing, gaze=gaze,
                                           features=None if features is None else features.copy(),
