@@ -96,10 +96,14 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
                tracker_factory: Optional[Callable[[], FaceTracker]] = None,
                hand_tracker_factory: Optional[Callable[[], HandTracker]] = None,
                hand_loader: Optional[Callable[[], Callable[[], HandTracker]]] = None,
-               model_error: Optional[str] = None, allowed_hosts=LOCAL_HOSTS) -> FastAPI:
+               model_error: Optional[str] = None, allowed_hosts=LOCAL_HOSTS, record_all: bool = False,
+               recordings_dir: Optional[Path] = None) -> FastAPI:
     """Build the application.
 
     ``data_dir`` holds everyone's profiles (see ``users.py``).
+    ``record_all`` records every session, from the page's hello on, into
+    ``recordings_dir`` (default: ``data_dir/recordings``; see ``recorder.py``).
+    Without it the page's ● Rec button records single sessions there.
     ``tracker_factory`` creates one MediaPipe FaceTracker per connection. When
     it is None (e.g. the model could not be downloaded) the website still
     loads, shows ``model_error`` and works in mouse demo mode.
@@ -112,6 +116,7 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
     users = UserStore(Path(data_dir))
     hands = HandModel(hand_tracker_factory, hand_loader)
     app.state.hands = hands
+    recordings = Path(recordings_dir) if recordings_dir is not None else Path(data_dir) / "recordings"
 
     @app.middleware("http")
     async def no_cache(request, call_next):
@@ -130,6 +135,7 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             "hands_error": hands.error,
             "profile": users.profile_store(active).summary() if active else None,
             "users": len(users.list()),
+            "recording": record_all,
         })
 
     @app.get("/api/trail/{kind}")
@@ -186,7 +192,8 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             factory = tracker_factory or _unavailable(model_error)
         # One worker thread per connection keeps MediaPipe calls ordered.
         executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="paralic-session")
-        session = await loop.run_in_executor(executor, lambda: TrackerSession(factory, users, push=push, mode=mode))
+        session = await loop.run_in_executor(executor, lambda: TrackerSession(
+            factory, users, push=push, mode=mode, recordings=recordings, record=record_all))
         send_task = asyncio.create_task(sender())
         try:
             while not send_task.done():
@@ -218,12 +225,16 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
             outbox.put_nowait({"type": "fatal", "error": f"Tracker error: {exc}"})
         finally:
             outbox.put_nowait(None)
+            # Close the session (saving it, finishing a recording) on its own thread after
+            # anything still running there - queued before any await and shielded, so that
+            # it happens even when this task is being cancelled.
+            closing = loop.run_in_executor(executor, session.close)
+            executor.shutdown(wait=False)
             try:
                 await asyncio.wait_for(send_task, timeout=2.0)
             except Exception:
                 send_task.cancel()
-            await loop.run_in_executor(executor, session.close)
-            executor.shutdown(wait=False)
+            await asyncio.shield(closing)
 
     app.mount("/", StaticFiles(directory=str(web_dir), html=True), name="web")
     return app

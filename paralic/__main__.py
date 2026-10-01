@@ -72,6 +72,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="path of the MediaPipe hand landmarker model for Hand mode (downloaded if missing)")
     parser.add_argument("--data-dir", type=Path, default=PROJECT_ROOT / "data",
                         help="where each person's calibration and personal settings are saved")
+    parser.add_argument("--record", action="store_true",
+                        help="record every session for the Paralic Inspector (camera images included; "
+                             "see docs/recording-format.md)")
+    parser.add_argument("--recordings-dir", type=Path, default=None,
+                        help="where recordings are saved (default: <data-dir>/recordings)")
     parser.add_argument("--verbose", action="store_true", help="debug logging")
     args = parser.parse_args(argv)
 
@@ -114,14 +119,18 @@ def main(argv: list[str] | None = None) -> None:
     import uvicorn
 
     port = _pick_port(args.host, args.port)
+    recordings = args.recordings_dir or args.data_dir / "recordings"
     app = create_app(data_dir=args.data_dir, web_dir=DEFAULT_WEB_DIR,
                      tracker_factory=tracker_factory, hand_loader=hand_loader,
-                     model_error=model_error, allowed_hosts=_allowed_hosts(args.host))
+                     model_error=model_error, allowed_hosts=_allowed_hosts(args.host),
+                     record_all=args.record, recordings_dir=recordings)
 
     shown_host = "localhost" if args.host in ("127.0.0.1", "0.0.0.0", "::", "::1") else args.host
     url = f"http://{shown_host}:{port}/"
     print(f"\n  Paralic {__version__} - eye-controlled browsing\n  Open {url} in Chrome, Edge or Firefox.\n"
           f"  Press Ctrl+C to stop.\n", flush=True)
+    if args.record:
+        print(f"  Recording every session (camera images included) in {recordings}\n", flush=True)
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         log.warning("Browsers only allow camera access on localhost or HTTPS pages.")
     from . import launcher

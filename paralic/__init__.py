@@ -11,6 +11,7 @@ The package is split into small, independently testable pieces:
 * ``hand_gestures``, ``hand_control`` - hand mode (point, pinch, open hand)
 * ``tracker``, ``hands`` - MediaPipe FaceLandmarker / HandLandmarker wrappers
 * ``session``   - per-browser-connection processing pipeline (eyes or hand)
+* ``recorder``  - session recordings for the Paralic Inspector
 * ``server``    - FastAPI web server (website + WebSocket)
 """
 

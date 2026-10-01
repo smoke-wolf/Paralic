@@ -47,6 +47,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 import numpy as np
@@ -65,6 +66,7 @@ from .personalize import (EXPERIMENTS, SMOOTHING_LEVELS, TRIAL_TIMEOUT_MS, Perso
                           analyze_experiment, experiment_arms, recommend_magnet, run_finetune, smoothing_params,
                           tune_smoothing)
 from .oscontrol import OSController
+from .recorder import Recorder
 from .system_control import SystemController, hand_config
 from .tracker import FaceTracker, decode_image
 from .users import UnknownUser, UserStore
@@ -143,6 +145,7 @@ _REPLY_TYPES = {
     "hello": "hello",
     "settings": "settings",
     "ping": "pong",
+    "recording": "recording",
     "users": "users",
     "user_select": "users",
     "user_create": "users",
@@ -229,8 +232,11 @@ class _FrameRecord:
 class TrackerSession:
     def __init__(self, tracker_factory: Callable[[], Any], users: UserStore,
                  clock: Callable[[], float] = time.monotonic, wall: Callable[[], float] = time.time,
-                 push: Optional[Callable[[dict], None]] = None, mode: str = "eyes"):
+                 push: Optional[Callable[[dict], None]] = None, mode: str = "eyes",
+                 recordings: Optional[Path] = None, record: bool = False):
         # ``tracker_factory`` makes a FaceTracker - or a HandTracker in hand mode.
+        # ``recordings``: where recordings go (default: <data dir>/recordings);
+        # ``record``: record from the page's hello on (python -m paralic --record).
         self.mode = "hand" if mode == "hand" else "eyes"
         self.hand: Optional[HandControl] = HandControl() if self.mode == "hand" else None
         self._tracker_factory = tracker_factory
@@ -238,7 +244,12 @@ class TrackerSession:
         self.users = users
         self.clock = clock
         self.wall = wall
-        self._push = push or (lambda msg: None)
+        self._page_push = push or (lambda msg: None)
+        self._push = self._pushed
+        # Recording this session (see recorder.py): None while not recording.
+        self.recordings = Path(recordings) if recordings is not None else Path(users.root) / "recordings"
+        self.record_all = record
+        self._recorder: Optional[Recorder] = None
         self._lock = threading.RLock()
         self.blink = BlinkDetector()
         self.wink = WinkDetector()
@@ -306,11 +317,50 @@ class TrackerSession:
 
     def close(self) -> None:
         with self._lock:
+            self._stop_recording()
             self._save_if_dirty()
             self._save_face()
             if self._tracker is not None:
                 self._tracker.close()
                 self._tracker = None
+
+    # ------------------------------------------------------------------
+    # Recording (see recorder.py and docs/recording-format.md)
+    # ------------------------------------------------------------------
+    def _cmd_recording(self, cmd: dict) -> list[dict]:
+        """Start (``on``: true) or stop (false) recording this session; without ``on``, how it is going."""
+        rec = self._recorder
+        if cmd.get("on") is True and (rec is None or not rec.active):
+            self._stop_recording()                  # one that stopped by itself (e.g. the disk was full)
+            try:
+                rec = self._recorder = Recorder(self, self.recordings, cmd.get("video"))
+            except OSError as exc:
+                log.warning("Could not start recording in %s: %s", self.recordings, exc)
+                return [{"type": "recording", "ok": False, "on": False, "error": f"Could not start recording: {exc}"}]
+            rec.command(cmd)
+        elif cmd.get("on") is False:
+            self._stop_recording()
+        return [{"type": "recording", "ok": True, **(rec.status() if rec is not None else {"on": False})}]
+
+    def _stop_recording(self) -> None:
+        rec, self._recorder = self._recorder, None
+        if rec is not None:
+            rec.stop()
+
+    def _record_frame(self, t: float, header: dict, image: bytes, out: list[dict], features: Any = None,
+                      points: Any = None) -> list[dict]:
+        """Record a processed frame while recording; returns ``out`` (the messages for the page)."""
+        rec = self._recorder
+        if rec is not None:
+            rec.frame(t, header, image, out, features, points)
+        return out
+
+    def _pushed(self, msg: dict) -> None:
+        """Send a background job's message to the page (and record it)."""
+        rec = self._recorder
+        if rec is not None:
+            rec.push(msg)
+        self._page_push(msg)
 
     # ------------------------------------------------------------------
     # Personal settings
@@ -438,6 +488,8 @@ class TrackerSession:
         entry = {"version": version, "source": source, "time": _now(),
                  "config": ModelConfig.from_dict(self.model.meta.get("config")).name, **extra}
         self.personal["model_history"] = (self.personal.get("model_history", []) + [entry])[-50:]
+        if self._recorder is not None:
+            self._recorder.model(source)
 
     # ------------------------------------------------------------------
     # Frames
@@ -469,7 +521,8 @@ class TrackerSession:
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
         if self.hand is not None:
-            return self._hand_frame(t, frame_id, header, obs, started)
+            out = self._hand_frame(t, frame_id, header, obs, started)
+            return self._record_frame(t, header, image, out, None, None if obs is None else obs.points_norm)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
         face_events: list[dict] = []
         features = raw = None
@@ -610,7 +663,7 @@ class TrackerSession:
                 self.system.click(g)
             if res.disabled_reason:
                 out.append(self.system.state())
-        return out
+        return self._record_frame(t, header, image, out, features, None if obs is None else obs.points_px)
 
     def _hand_frame(self, t: float, frame_id: Any, header: dict, obs, started: float) -> list[dict]:
         """Hand mode: the fingertip is the cursor, a pinch clicks (see hand_control.py)."""
@@ -718,6 +771,19 @@ class TrackerSession:
     # Commands (JSON text messages)
     # ------------------------------------------------------------------
     def handle_command(self, cmd: dict) -> list[dict]:
+        rec = self._recorder
+        if rec is not None:
+            rec.command(cmd)
+        replies = self._handle_command(cmd)
+        with self._lock:
+            rec = self._recorder
+            if rec is not None:
+                rec.replies(cmd, replies)      # and what the command changed (the person, the model)
+        if rec is None and self.record_all and cmd.get("type") == "hello":
+            replies += self.handle_command({"type": "recording", "on": True})     # python -m paralic --record
+        return replies
+
+    def _handle_command(self, cmd: dict) -> list[dict]:
         kind = cmd.get("type")
         handler = getattr(self, f"_cmd_{kind}", None) if isinstance(kind, str) else None
         if handler is None:
