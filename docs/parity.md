@@ -79,6 +79,15 @@ web's). Each person's network is trained on its own platform's features, so this
     "hold still while you look" (a running, then 0.6 s moving, average per fixation; a new fixation after
     two samples outside the radius), and the head nudge (joystick past a dead zone, signs learned by a
     head-direction check, the gaze point held still while nudging).
+15. **Hand mode** (`hands.py`, `hand_gestures.py`, `hand_control.py`, `web/js/hand-calibration.js`): the
+    index fingertip is the cursor (through a per-person quadratic pointing map fitted on 13 dots labelled in
+    screen fractions), a pinch clicks at the cursor of the last frame before the fingers started to close
+    (thresholds a quarter and half of the way from the person's closed pinch to their open hand, found by
+    an Otsu split of a pinch cycle), pinch-drag scrolls by palm-centre travel in palm widths, and a held
+    "stop" hand (four fingers spread, thumb out) asks the page to toggle pause once per gesture. It runs in
+    the same `TrackerSession` (`mode="hand"`), so people, settings and desktop control are shared; each
+    person's setup is `users/<id>/hand.json`. macOS has no hand mode yet (Vision's hand pose request would
+    give the same 21 points).
 
 ## Issues found in the macOS code
 
