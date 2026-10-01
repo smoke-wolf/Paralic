@@ -1,40 +1,26 @@
-// Talk: speak common phrases, or type with your eyes (with word predictions)
-// and have the computer read it aloud.
+// Talk: speak common phrases (grouped by topic), or type with your eyes (with
+// word + next-word predictions) and have the computer read it aloud in a natural
+// voice.
 
 import { h } from '../dom.js';
 import { icon } from '../icons.js';
-import { speak } from '../speech.js';
-import { WORDS, STARTERS } from '../data/words.js';
-
-const PHRASES = [
-  ['👋', 'Hello'],
-  ['🙏', 'Thank you'],
-  ['👍', 'Yes'],
-  ['👎', 'No'],
-  ['🆘', 'I need help', 'urgent'],
-  ['🤕', 'I am in pain', 'urgent'],
-  ['💧', 'I am thirsty'],
-  ['🍽️', 'I am hungry'],
-  ['🚻', 'I need the bathroom'],
-  ['😴', 'I am tired'],
-  ['✋', 'Please wait'],
-  ['❤️', 'I love you'],
-];
+import { speak, listVoices, setVoice, currentVoice } from '../speech.js';
+import { WORDS, STARTERS, NEXT } from '../data/words.js';
+import { PHRASE_GROUPS } from '../data/phrases.js';
 
 const ROWS = ['QWERTYUIOP', 'ASDFGHJKL\'', 'ZXCVBNM,.?'];
 
 // Kept between visits to the page.
 let text = '';
 let mode = 'phrases';
+let group = 0;
 
 function sentenceStart(t) {
   return /^\s*$/.test(t) || /[.?!]\s*$/.test(t);
 }
-
 function capitalise(word) {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
-
 function fixI(word) {
   return word === 'i' || word.startsWith("i'") ? capitalise(word) : word;
 }
@@ -42,14 +28,22 @@ function fixI(word) {
 export function predict(current) {
   const m = current.match(/([A-Za-z']+)$/);
   const prefix = m ? m[1].toLowerCase() : '';
-  const atStart = sentenceStart(current.slice(0, current.length - prefix.length));
+  const before = current.slice(0, current.length - prefix.length);
+  const atStart = sentenceStart(before);
   if (!prefix) {
     if (!current.trim()) return STARTERS;
-    const next = ['you', 'the', 'to', 'please'];
-    return atStart ? next.map(capitalise) : next;
+    // No partial word: suggest likely *next* words from the previous word.
+    const lastWord = (before.trim().match(/([A-Za-z']+)[\s.,?!]*$/) || [, ''])[1].toLowerCase();
+    const next = (NEXT[lastWord] || ['the', 'to', 'you', 'please', 'and', 'a', 'is', 'it']).slice(0, 4);
+    return atStart ? next.map(capitalise) : next.map(fixI);
   }
   const matches = WORDS.filter((w) => w.startsWith(prefix) && w !== prefix).slice(0, 4);
   return matches.map((w) => (atStart ? capitalise(w) : fixI(w)));
+}
+
+function shortVoiceName(v) {
+  if (!v) return 'Default';
+  return (v.name || 'Voice').replace(/\s*\(.*?\)\s*/g, '').trim() || v.name;
 }
 
 export default {
@@ -60,12 +54,26 @@ export default {
     speakBtn.addEventListener('click', () => speak(text));
     const phrasesTab = h('button', { class: 'btn', type: 'button', html: `${icon('grid')}<span>Phrases</span>` });
     const keyboardTab = h('button', { class: 'btn', type: 'button', html: `${icon('keyboard')}<span>Keyboard</span>` });
+    const voiceBtn = h('button', { class: 'btn', type: 'button', title: 'Change the voice' });
+    const refreshVoiceLabel = () => { voiceBtn.innerHTML = `${icon('speaker')}<span>Voice: ${shortVoiceName(currentVoice())}</span>`; };
+    refreshVoiceLabel();
+    voiceBtn.addEventListener('click', () => {
+      const vs = listVoices();
+      if (!vs.length) return;
+      const cur = currentVoice();
+      const i = Math.max(0, vs.findIndex((v) => cur && v.voiceURI === cur.voiceURI));
+      const nextV = vs[(i + 1) % vs.length];
+      setVoice(nextV.voiceURI);
+      refreshVoiceLabel();
+      speak('Hello, this is my voice.');
+    });
     const body = h('div');
 
     const renderDisplay = () => {
       display.innerHTML = '';
       if (!text) {
-        display.append(h('span', { class: 'placeholder' }, mode === 'keyboard' ? 'Look at letters and blink twice to type…' : 'Pick a phrase to say it out loud…'));
+        display.append(h('span', { class: 'placeholder' },
+          mode === 'keyboard' ? 'Look at letters and blink twice to type…' : 'Pick a phrase to say it out loud…'));
       } else {
         const shown = text.length > 70 ? `…${text.slice(-70)}` : text;
         display.append(document.createTextNode(shown));
@@ -75,16 +83,22 @@ export default {
 
     const renderPhrases = () => {
       body.innerHTML = '';
-      body.append(h('div', { class: 'phrases' },
-        PHRASES.map(([emoji, phrase, cls]) => {
-          const b = h('button', { class: `phrase ${cls || ''}`, type: 'button' }, h('span', { class: 'emoji' }, emoji), h('span', {}, phrase));
-          b.addEventListener('click', () => {
-            text = phrase;
-            renderDisplay();
-            speak(phrase);
-          });
+      // Topic chips.
+      const cats = h('div', { class: 'phrase-cats' },
+        PHRASE_GROUPS.map((g, i) => {
+          const chip = h('button', { class: `btn chip ${i === group ? 'active' : ''}`, type: 'button' },
+            h('span', { class: 'emoji' }, g.icon || '💬'), h('span', {}, g.name));
+          chip.addEventListener('click', () => { group = i; renderPhrases(); });
+          return chip;
+        }));
+      const grid = h('div', { class: 'phrases' },
+        PHRASE_GROUPS[group].phrases.map(([emoji, phrase, cls]) => {
+          const b = h('button', { class: `phrase ${cls || ''}`, type: 'button' },
+            h('span', { class: 'emoji' }, emoji), h('span', {}, phrase));
+          b.addEventListener('click', () => { text = phrase; renderDisplay(); speak(phrase); });
           return b;
-        })));
+        }));
+      body.append(cats, grid);
     };
 
     const suggestionsRow = h('div', { class: 'suggestions' });
@@ -114,6 +128,11 @@ export default {
       update();
     };
 
+    const deleteWord = () => {
+      text = text.replace(/\s*[^\s]*\s*$/, '');  // drop trailing spaces + last token
+      update();
+    };
+
     const key = (label, onClick, cls = '', html = null) => {
       const b = h('button', { class: `key ${cls}`, type: 'button', 'aria-label': typeof label === 'string' ? label : undefined });
       if (html) b.innerHTML = html;
@@ -129,6 +148,7 @@ export default {
       const special = h('div', { class: 'key-row special' },
         key('Space', () => { text += ' '; update(); }, 'small-text', `${icon('space')}<span>Space</span>`),
         key('Delete', () => { text = text.slice(0, -1); update(); }, 'small-text', `${icon('del')}<span>Delete</span>`),
+        key('Delete word', deleteWord, 'small-text', `${icon('del')}<span>Word</span>`),
         key('Clear', () => { text = ''; update(); }, 'small-text', `${icon('trash')}<span>Clear</span>`),
         key('Speak', () => speak(text), 'speak small-text', `${icon('speaker')}<span>Speak</span>`));
       body.append(h('div', { class: 'keyboard' }, suggestionsRow, ...rows, special));
@@ -147,7 +167,8 @@ export default {
     keyboardTab.addEventListener('click', () => setMode('keyboard'));
 
     el.append(h('div', { class: 'talk' },
-      h('div', { class: 'talk-top' }, display, h('div', { class: 'tabs' }, phrasesTab, keyboardTab, speakBtn)),
+      h('div', { class: 'talk-top' }, display,
+        h('div', { class: 'tabs' }, phrasesTab, keyboardTab, voiceBtn, speakBtn)),
       body));
     setMode(mode);
   },

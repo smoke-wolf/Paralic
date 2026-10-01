@@ -1125,3 +1125,8 @@ body.gaze-dragging [data-dropzone].drop-hover,
   border: 3px solid rgba(96, 165, 250, 0.95); border-radius: 50%;
   box-shadow: 0 0 12px rgba(96, 165, 250, 0.6); pointer-events: none; z-index: 7;
 }
+
+/* Talk: topic chips for the phrase groups */
+.phrase-cats { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.phrase-cats .chip { padding: 8px 14px; }
+.phrase-cats .chip .emoji { margin-right: 6px; }

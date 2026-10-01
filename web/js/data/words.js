@@ -73,3 +73,44 @@ export const WORDS = COMMON.split(/\s+/).map((w) => w.trim()).filter((w, i, all)
 
 // Likely first words when nothing has been typed yet.
 export const STARTERS = ['I', 'Please', 'Can', 'Thank'];
+
+// Next-word predictions: after one of these words, these are the likely follow-
+// ups (ordered). Tuned for everyday and care conversation so the keyboard needs
+// far fewer letters. Lowercase keys; matching is case-insensitive.
+export const NEXT = {
+  i: ['am', 'need', 'want', 'feel', 'would', 'can', "don't", 'like', 'will', 'have'],
+  am: ['not', 'feeling', 'going', 'in', 'very', 'so', 'really', 'cold', 'hot', 'tired'],
+  need: ['to', 'help', 'a', 'some', 'my', 'more', 'the'],
+  want: ['to', 'a', 'some', 'my', 'the', 'you', 'more', 'that'],
+  feel: ['good', 'better', 'bad', 'sick', 'tired', 'happy', 'sad', 'worried', 'cold', 'hot'],
+  feeling: ['good', 'better', 'bad', 'sick', 'tired', 'worse', 'okay'],
+  would: ['like', 'you'],
+  like: ['to', 'a', 'some', 'you', 'the', 'this', 'that', 'more'],
+  can: ['you', 'i', 'we', 'not', 'please'],
+  could: ['you', 'i', 'we', 'please'],
+  please: ['help', 'can', 'wait', 'come', 'bring', 'pass', 'turn', 'call', 'stop', 'open', 'close'],
+  thank: ['you'],
+  thanks: ['for', 'so'],
+  the: ['bathroom', 'light', 'window', 'door', 'phone', 'water', 'blanket', 'pillow', 'doctor', 'nurse', 'tv', 'room'],
+  to: ['the', 'go', 'eat', 'drink', 'sleep', 'rest', 'sit', 'lie', 'talk', 'see', 'bed', 'you'],
+  my: ['family', 'medicine', 'glasses', 'phone', 'head', 'back', 'legs', 'arm', 'hand', 'pillow', 'mum', 'mom', 'dad'],
+  a: ['little', 'lot', 'drink', 'break', 'minute', 'hug', 'question', 'doctor', 'nurse', 'tissue'],
+  some: ['water', 'help', 'food', 'rest', 'quiet', 'company', 'more', 'tea', 'coffee'],
+  is: ['it', 'there', 'that', 'this', 'too'],
+  it: ['is', 'hurts', 'okay', 'again'],
+  you: ['are', 'for', 'please', 'very', 'so', 'help'],
+  are: ['you', 'we', 'they', 'okay'],
+  we: ['can', 'should', 'could', 'go', 'are'],
+  go: ['to', 'home', 'out', 'back', 'now', 'outside'],
+  turn: ['on', 'off', 'up', 'down', 'it'],
+  call: ['my', 'the', 'a', 'family', 'doctor', 'nurse'],
+  bring: ['me', 'the', 'my', 'some'],
+  pass: ['me', 'the', 'my'],
+  open: ['the', 'it'],
+  close: ['the', 'it'],
+  this: ['is', 'one', 'hurts'],
+  that: ['is', 'one', 'please', 'hurts'],
+  not: ['now', 'yet', 'okay', 'good', 'sure'],
+  it's: ['too', 'okay', 'not', 'a'],
+  "i'm": ['not', 'feeling', 'tired', 'okay', 'cold', 'hot', 'fine', 'sorry'],
+};
