@@ -457,7 +457,9 @@ def test_camera_flow(browser, tmp_path):
             pass
         pg.wait_for_selector("text=Blink twice to calibrate", timeout=30000)
         pg.wait_for_selector(".calib-dot", timeout=20000)          # started by the video's double blink
-        pg.wait_for_selector(".results", timeout=120000)
+        # The video's eyes never move to the dots, so every dot waits for its time
+        # limit, the accuracy comes out poor and the improving rounds run as well.
+        pg.wait_for_selector(".results", timeout=360000)
         # The results screen must be usable with the eyes: gaze cursor on and live.
         pg.wait_for_timeout(800)
         assert pg.evaluate("window.paralic.gaze.active && !window.paralic.gaze.suspended")

@@ -368,6 +368,62 @@ def _selections(groups: dict[str, list[LabeledFrame]]) -> dict[str, np.ndarray]:
     return out
 
 
+# Eye features for spotting dots the eyes never really looked at: both eyes'
+# iris offsets and lid heights (columns of FEATURE_NAMES).
+_DOT_CHECK_IDX = (0, 1, 2, 3, 20, 21)
+
+
+def suspect_dots(frames: list[LabeledFrame], ratio: float = 3.0, min_px: float = 120.0,
+                 max_share: float = 0.25) -> list[str]:
+    """Calibration dots whose labels look wrong: the eyes were somewhere else.
+
+    Each dot is predicted from all the *other* dots with a small quadratic
+    ridge model of the eye features (leave-one-dot-out), and a dot whose
+    prediction lands far from its target - ``ratio`` times the typical miss
+    and at least ``min_px`` - was probably not looked at (eyes closed,
+    reading the instructions, looking at the wrong thing). The worst such dot
+    is set aside and the others are checked again without it (one wrong dot
+    bends the model and hides another), up to ``max_share`` of the dots and
+    only while at least 9 remain. Returns the dots' group names ("cal:3").
+    """
+    groups = _group_frames([f for f in frames if f.kind in FIXATION_KINDS])
+    selected = _selections(groups)
+    names, means, targets = [], [], []
+    for name, group in groups.items():
+        keep = selected[name]
+        if not _is_fixation(group) or keep.sum() < 4:
+            continue
+        F = np.array([f.features for f in group])[keep]
+        names.append(name)
+        means.append(F[:, list(_DOT_CHECK_IDX)].mean(axis=0))
+        targets.append(np.mean([group[i].target for i in np.flatnonzero(keep)], axis=0))
+    n = len(names)
+    if n < 12:
+        return []
+    M, T = np.array(means), np.array(targets)
+    Z = (M - M.mean(axis=0)) / np.maximum(M.std(axis=0), 1e-6)
+    gx, gy = Z[:, [0, 2]].mean(axis=1), Z[:, [1, 3, 4, 5]].mean(axis=1)    # rough horizontal / vertical gaze
+    A = np.column_stack([np.ones(n), Z, gx ** 2, gy ** 2, gx * gy])
+    lam = np.eye(A.shape[1]) * 0.5
+    lam[0, 0] = 0.0
+    alive = np.ones(n, bool)
+    flagged: list[str] = []
+    allowed = min(int(max_share * n), n - 9)
+    while len(flagged) < allowed:
+        idx = np.flatnonzero(alive)
+        resid = np.empty(len(idx))
+        for j, i in enumerate(idx):
+            others = idx[idx != i]
+            coef = np.linalg.solve(A[others].T @ A[others] + lam, A[others].T @ T[others])
+            resid[j] = float(np.linalg.norm(A[i] @ coef - T[i]))
+        worst = int(np.argmax(resid))
+        if resid[worst] <= max(ratio * float(np.median(resid)), min_px):
+            break
+        alive[idx[worst]] = False
+        flagged.append(names[idx[worst]])
+    return flagged
+
+
 def prepare_training_set(frames: list[LabeledFrame], chunk: int = 4, stride: int = 2,
                          head_weight: float = 9.0, min_frames: int = 4):
     """Turn labelled frames into (X, Y, groups, weights, holdout) for GazeNet.
@@ -481,6 +537,11 @@ def fit_full_calibration(data: CalibrationData, include_validation: bool = False
     if n_points < 6:
         raise CalibrationError(
             "Not enough calibration data - make sure your face is well lit and visible to the camera.")
+    # Leave out dots the eyes were not really on (closed, elsewhere).
+    dropped = suspect_dots(frames)
+    if dropped:
+        skip = set(dropped)
+        frames = [f for f in frames if f"{f.kind}:{f.point}" not in skip]
     X, Y, G, W, H = prepare_training_set(frames)
     usable_points = len({g for g, h in zip(G, H) if h})
     if usable_points < 6:
@@ -502,6 +563,7 @@ def fit_full_calibration(data: CalibrationData, include_validation: bool = False
         "n_frames": len(frames),
         "n_samples": report.n_samples,
         "n_points": usable_points,
+        "dropped_points": dropped,
         "l2": report.l2,
         "config": report.config,
         "candidates": {k: _round(v) for k, v in report.candidates.items()},

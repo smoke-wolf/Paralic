@@ -5,8 +5,8 @@ import time
 import numpy as np
 
 from paralic.calibration import (FIXATION_IDX, CalibrationData, LabeledFrame, SettleTracker, calibrated_pose,
-                                 fixation_frames, noise_sigma, point_summaries, prepare_training_set, segments,
-                                 settled_run)
+                                 fit_full_calibration, fixation_frames, noise_sigma, point_summaries,
+                                 prepare_training_set, segments, settled_run, suspect_dots)
 from paralic.features import EYE_FEATURE_IDX
 from tests.synthetic import Head, VirtualUser, jitter_head
 
@@ -138,3 +138,36 @@ def test_calibrated_pose_is_the_median_head_position_during_the_dots():
     pose = calibrated_pose(d)
     assert pose == {"x": 2.0, "y": -6.0, "dist": 55.0, "yaw": 4.0, "pitch": -8.0}
     assert set(EYE_FEATURE_IDX).isdisjoint({14, 15, 17, 18, 19})
+
+
+def _grid_session(user, rng, wrong=()):
+    """21 dots (as the page shows them); for the dots in ``wrong`` the eyes rest elsewhere."""
+    d = CalibrationData()
+    xs, ys = [0.06, 0.28, 0.5, 0.72, 0.94], [0.08, 0.37, 0.63, 0.92]
+    pts = [(960, 540)] + [(x * 1920, y * 1080) for y in ys for x in xs]
+    t = 0.0
+    for i, (sx, sy) in enumerate(pts):
+        look = (1700 - sx * 0.3, 900 - sy * 0.5) if i in wrong else (sx, sy)
+        for _ in range(18):
+            d.add(LabeledFrame(t=t, features=user.features(*look, jitter_head(rng, Head(), 0.3)), target=(sx, sy),
+                               kind="cal", point=i))
+            t += 1 / 30
+    return d
+
+
+def test_dots_the_eyes_were_not_on_are_left_out():
+    user, rng = VirtualUser(seed=9, noise=1.0), np.random.default_rng(8)
+    good = _grid_session(user, rng)
+    assert suspect_dots(good.frames) == []
+    bad = _grid_session(VirtualUser(seed=9, noise=1.0), np.random.default_rng(8), wrong=(4, 11, 17))
+    flagged = suspect_dots(bad.frames)
+    assert set(flagged) == {"cal:4", "cal:11", "cal:17"}
+    # Training leaves them out and says so.
+    for i in range(60):
+        bad.add(LabeledFrame(t=100 + i / 30, features=user.features(960, 540, Head()), target=(960, 540),
+                             kind="head", point=0))
+    _, info = fit_full_calibration(bad)
+    assert set(info["dropped_points"]) == {"cal:4", "cal:11", "cal:17"}
+    # Never more than a quarter of the dots, and never below 9.
+    worse = _grid_session(VirtualUser(seed=9, noise=1.0), np.random.default_rng(8), wrong=range(1, 13))
+    assert len(suspect_dots(worse.frames)) <= 5

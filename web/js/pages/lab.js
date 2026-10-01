@@ -17,7 +17,7 @@ const TRIALS_PER_ARM = 4;
 const TRIAL_TIMEOUT_MS = 10000;
 const NETWORK_NAMES = { both: 'Both eyes', left: 'Left eye', right: 'Right eye' };
 const SOURCES = { calibration: 'calibration', 'fine-tune': 'fine-tuning', 'fine-tuned': 'fine-tuning',
-  retrained: 'model search', adjust: 'quick adjust' };
+  retrained: 'model search', adjust: 'quick adjust', refine: 'extra calibration round' };
 const DECISIONS = {
   need_more: 'Needs more trials', keep: 'Current setting is best', adopt: 'Winner adopted', inconclusive: 'No clear winner yet',
 };

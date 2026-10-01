@@ -65,7 +65,12 @@ web's). Each person's network is trained on its own platform's features, so this
     `web/js/position.js`; the frame message carries `pos` and, on request, `light`) that guides the person
     back to the calibrated pose (`calibrated_pose`) before a quick adjust; the quick adjust is 9 dots with
     the eyes alone.
-12. **Cursor motion** (`web/js/motion.js`, per person): critically damped spring glide (ω = 9.5 / 17 / 30),
+12. **Improving rounds**: after the accuracy check, while it is below *good* (< 5.5 % of the screen diagonal),
+    up to 3 rounds of 9 extra dots chosen where the measured error is largest, a refit, and 5 fresh measuring
+    dots on which the previous and the new network are compared (`calibration_start` mode `refine`,
+    `validation_finish`); the loser's extra dots are dropped. Dots the eyes were not on are left out of every
+    fit (`suspect_dots`: leave-one-dot-out ridge residual > 3 × median and > 120 px, at most 25 %).
+13. **Cursor motion** (`web/js/motion.js`, per person): critically damped spring glide (ω = 9.5 / 17 / 30),
     "hold still while you look" (a running, then 0.6 s moving, average per fixation; a new fixation after
     two samples outside the radius), and the head nudge (joystick past a dead zone, signs learned by a
     head-direction check, the gaze point held still while nudging).

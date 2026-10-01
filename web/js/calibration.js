@@ -69,6 +69,62 @@ const HEAD_STEPS = [
 // Frames of a settled gaze each dot needs (see collect()).
 const DOT_FRAMES = { cal: 16, val: 14, adjust: 14 };
 
+// Improving rounds (see improveAccuracy): at most this many, each measured on
+// dots of its own that no network was trained on (they start in the centre).
+const REFINE_ROUNDS = 3;
+const ROUND_VALIDATION = [
+  [[0.5, 0.45], [0.15, 0.5], [0.5, 0.15], [0.85, 0.5], [0.5, 0.85]],
+  [[0.5, 0.5], [0.2, 0.15], [0.8, 0.15], [0.8, 0.85], [0.2, 0.85]],
+  [[0.5, 0.6], [0.38, 0.33], [0.62, 0.33], [0.9, 0.7], [0.1, 0.7]],
+];
+// Places for extra dots: between the calibration grid's dots, and along the
+// edges and in the corners (where the eyes turn furthest and tracking is
+// hardest).
+const BETWEEN = [0.17, 0.39, 0.61, 0.83].flatMap((x) => [0.22, 0.5, 0.78].map((y) => [x, y]));
+const EDGES = [[0.03, 0.05], [0.5, 0.04], [0.97, 0.05], [0.97, 0.5], [0.97, 0.95], [0.5, 0.96],
+  [0.03, 0.95], [0.03, 0.5], [0.28, 0.04], [0.72, 0.96]];
+
+/**
+ * Extra dots for an improving round, where the last measurement says the
+ * tracking is least sure. `measured`: [{x, y, error}] in page fractions.
+ * Each round is a different exercise: round 1 fills in between the grid,
+ * round 2 goes to the edges and corners, round 3 mixes both, shifted a
+ * little so no place repeats. Starts in the centre (where the countdown is)
+ * and is ordered as a short path.
+ */
+export function refinePoints(measured, round, n = 9) {
+  const errorAt = ([x, y]) => {
+    let wsum = 0;
+    let esum = 0;
+    for (const m of measured) {
+      const w = 1 / (0.02 + (m.x - x) ** 2 + (m.y - y) ** 2);
+      wsum += w;
+      esum += w * m.error;
+    }
+    return wsum ? esum / wsum : 1;
+  };
+  const shift = round >= 3 ? 0.04 : 0;
+  const pool = (round === 1 ? BETWEEN : round === 2 ? EDGES : [...BETWEEN, ...EDGES])
+    .map(([x, y], i) => [Math.min(0.97, Math.max(0.03, x + (i % 2 ? shift : -shift))), y]);
+  const ranked = pool.map((p) => ({ p, e: errorAt(p) })).sort((a, b) => b.e - a.e);
+  const picked = [];
+  for (const { p } of ranked) {
+    if (picked.length >= n - 1) break;
+    if (picked.every((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) >= 0.16)) picked.push(p);
+  }
+  // A short path from the centre: always on to the nearest dot left.
+  const path = [[0.5, 0.5]];
+  while (picked.length) {
+    const [cx, cy] = path[path.length - 1];
+    let best = 0;
+    picked.forEach((q, i) => {
+      if (Math.hypot(q[0] - cx, q[1] - cy) < Math.hypot(picked[best][0] - cx, picked[best][1] - cy)) best = i;
+    });
+    path.push(picked.splice(best, 1)[0]);
+  }
+  return path;
+}
+
 export function rateAccuracy(errorPx) {
   const rel = errorPx / Math.hypot(window.innerWidth, window.innerHeight);
   if (rel < 0.035) return 'excellent';
@@ -392,8 +448,9 @@ export class Calibrator {
         // don't make the person wait the full time on every dot.
         const limit = timeouts >= 2 ? { maxMs: 1600 } : {};
         progress = 0;
-        let n = await this.collect(kind, i, x, y, { ...opts, ...limit, minFrames, onProgress: shrink });
-        if (n < 5) n = await this.collect(kind, i, x, y, { ...opts, ...limit, minFrames, onProgress: shrink }); // one retry
+        const pt = (opts.pointBase || 0) + i;
+        let n = await this.collect(kind, pt, x, y, { ...opts, ...limit, minFrames, onProgress: shrink });
+        if (n < 5) n = await this.collect(kind, pt, x, y, { ...opts, ...limit, minFrames, onProgress: shrink }); // one retry
         timeouts = progress >= 1 ? 0 : timeouts + 1;
         sounds.point();
         this.setProgress(points.length, i + 1);
@@ -558,11 +615,13 @@ export class Calibrator {
     this.say('');
     await this.showPoints(VALIDATION_POINTS, 'val');
     this.say('Measuring accuracy…', h('div', { class: 'spinner' }));
-    const result = await this.tracker.request({ type: 'validation_finish' }, 'validation_result', 90000);
+    let result = await this.tracker.request({ type: 'validation_finish' }, 'validation_result', 90000);
     if (!result.ok) {
       toast(result.error || 'Validation failed', 'warn');
       return { mode: 'full', fit };
     }
+    // Not good enough yet? More rounds of exercises until it is.
+    result = await this.improveAccuracy(result);
     this.app.gaze.resetBias();
     if (result.saved === false) {
       toast('Could not save the calibration to disk — it works until you reload the page.', 'warn', 7000);
@@ -577,9 +636,100 @@ export class Calibrator {
       toast('Skipped the blink step — kept your blink settings');
     }
     if (blinks && !blinks.ok) toast(`Kept the standard blink settings: ${blinks.error}`, 'warn', 6000);
-    const again = await this.showResults(result);
-    if (again) return this.runFull();
+    for (;;) {
+      const choice = await this.showResults(result);
+      if (choice === 'again') return this.runFull();
+      if (choice !== 'better') break;
+      // One more round on request, even when the accuracy is already good.
+      const more = await this.improveAccuracy(result, { maxRounds: 1, force: true });
+      result = { ...more, rounds: [...(result.rounds || []), ...more.rounds],
+        first_error_px: result.first_error_px ?? more.first_error_px };
+      this.app.gaze.resetBias();
+    }
     return { mode: 'full', fit, validation: result };
+  }
+
+  /**
+   * While the measured accuracy is below "good", run up to REFINE_ROUNDS more
+   * rounds: extra dots where the tracking was least sure (a different kind of
+   * exercise each round), a network trained with them, and new dots to measure
+   * it. The server measures the new and the previous network on the same new
+   * dots and keeps the better one, so a round never makes things worse.
+   * Resolves to the final measurement, with `rounds` and `first_error_px`.
+   */
+  async improveAccuracy(result, { maxRounds = REFINE_ROUNDS, force = false } = {}) {
+    const rounds = [];
+    let current = result;
+    const labels = { excellent: 'Excellent', good: 'Good', fair: 'Fair', poor: 'Poor' };
+    const diag = Math.hypot(window.innerWidth, window.innerHeight);
+    let stalled = 0;
+    for (let round = 1; round <= maxRounds; round++) {
+      const rating = rateAccuracy(current.mean_error_px);
+      // `force`: one round on request even though the accuracy is good already.
+      if ((rating === 'good' || rating === 'excellent') && !(force && round === 1)) break;
+      await this.sayAndWait(round === 1 ? 'Let’s make it more accurate' : 'One more round',
+        `${labels[rating]} so far. A few more dots, where the tracking was least sure.`, 7000);
+      // A shaky cursor usually means dim or uneven light: check the setup again.
+      if (current.precision_px > 0.03 * diag) await this.positionCheck('full');
+      const started = await this.tracker.request({ type: 'calibration_start', mode: 'refine' }, 'calibration_started');
+      if (!started.ok) break;
+      const measured = (current.points || []).map((p) => {
+        const c = screenToClient(p.target[0], p.target[1]);
+        return { x: c.x / window.innerWidth, y: c.y / window.innerHeight, error: p.error };
+      });
+      await this.countdown('Look at each dot', 'Keep your head still, like before.');
+      this.say('');
+      await this.showPoints(refinePoints(measured, round), 'cal', { pointBase: started.point_base });
+      this.say('Training your gaze neural network…', h('div', { class: 'spinner' }));
+      const fit = await this.tracker.request({ type: 'calibration_fit', mode: 'full' }, 'calibration_result', 90000);
+      if (!fit.ok) break;
+      await this.countdown('Checking the accuracy', 'Five new dots.');
+      this.say('');
+      await this.showPoints(ROUND_VALIDATION[(round - 1) % ROUND_VALIDATION.length], 'val');
+      this.say('Measuring accuracy…', h('div', { class: 'spinner' }));
+      const res = await this.tracker.request({ type: 'validation_finish' }, 'validation_result', 90000);
+      if (!res.ok) break;
+      rounds.push({ round, ...(res.refine || {}), error_px: res.mean_error_px });
+      stalled = res.refine && res.refine.kept === 'previous' ? stalled + 1 : 0;
+      current = res;
+      if (stalled >= 2) break;     // two rounds in a row without a gain: more won't help now
+    }
+    this.say('');
+    return { ...current, rounds, first_error_px: result.mean_error_px };
+  }
+
+  /** After a quick adjust: measure the accuracy on five dots, and offer more
+   *  rounds when it is below "good". */
+  async checkAccuracy() {
+    await this.countdown('Checking the accuracy', 'Five more dots.');
+    this.say('');
+    await this.showPoints(VALIDATION_POINTS, 'val');
+    this.say('Measuring accuracy…', h('div', { class: 'spinner' }));
+    const res = await this.tracker.request({ type: 'validation_finish', refit: false }, 'validation_result', 60000);
+    this.say('');
+    if (!res.ok) return null;
+    const rating = rateAccuracy(res.mean_error_px);
+    if (rating === 'good' || rating === 'excellent') return res;
+    const ov = this.ui.ov;
+    ov.classList.remove('solid');
+    this.app.gaze.setSuspended(false);
+    const choice = await this.app.choose(ov, {
+      title: `Accuracy: ${rating} (${Math.round(res.mean_error_px)} px)`,
+      subtitle: 'A few rounds of extra dots can make it better (about half a minute each).',
+      choices: [
+        { id: 'improve', label: 'Improve it now', sub: 'Recommended', icon: 'sparkle', primary: true },
+        { id: 'later', label: 'Not now', sub: 'Use it as it is', icon: 'arrowRight' },
+      ],
+    });
+    this.app.gaze.setSuspended(true);
+    ov.classList.add('solid');
+    if (choice !== 'improve') return res;
+    const improved = await this.improveAccuracy(res);
+    this.app.gaze.resetBias();
+    const show = (px) => `${Math.round(px)} px`;
+    toast(`Accuracy ${show(res.mean_error_px)} → ${show(improved.mean_error_px)} (${rateAccuracy(improved.mean_error_px)})`,
+      'ok', 7000);
+    return improved;
   }
 
   async train(mode) {
@@ -642,13 +792,23 @@ export class Calibrator {
       map.append(h('i', { class: 't', style: { left: `${tx}%`, top: `${ty}%` } }));
       map.append(h('i', { class: 'p', style: { left: `${mx}%`, top: `${my}%` } }));
     }
+    const dropped = ((result.refit || {}).dropped_points || []).length;
+    const rounds = result.rounds || [];
+    const history = rounds.length
+      ? h('p', {}, `${rounds.length} extra round${rounds.length > 1 ? 's' : ''}: `
+        + `${Math.round(result.first_error_px)} px → ${Math.round(result.mean_error_px)} px`
+        + (result.mean_error_px < result.first_error_px - 1 ? '.' : ' (the first network stayed the best).'))
+      : null;
     const summary = h('div', {},
       h('div', { class: 'eyebrow' }, 'Calibration complete'),
       h('div', { class: `score ${rating}` }, labels[rating]),
       h('p', { class: 'muted' }, `Average error ${Math.round(result.mean_error_px)} px, jitter ${Math.round(result.precision_px)} px. `,
         rating === 'poor' || rating === 'fair'
-          ? 'Tip: sit centred in front of the camera with your face evenly lit, then recalibrate.'
+          ? 'Tip: sit centred in front of the camera with your face evenly lit, keep glasses free of reflections, '
+            + 'and look right at each dot until it is gone — then try again.'
           : 'Rings show the dots, purple points where the network thinks you looked.'),
+      history,
+      dropped ? h('p', { class: 'muted' }, `${dropped} dot${dropped > 1 ? 's were' : ' was'} left out: your eyes seemed to be elsewhere then.`) : null,
     );
     const ov = this.ui.ov;
     ov.classList.remove('solid');
@@ -661,19 +821,20 @@ export class Calibrator {
     // first calibration it has never been switched on before).
     this.app.gaze.setActive(true);
     this.app.gaze.setSuspended(false);
-    const choice = await this.app.choose(ov, {
-      top: false,
-      choices: [
-        { id: 'again', label: 'Recalibrate', sub: 'Run the calibration again', icon: 'refresh' },
-        { id: 'go', label: 'Start browsing', sub: 'Look here and blink twice', icon: 'check', primary: true },
-      ],
-      rowStyle: { paddingTop: '48vh' },
-    });
+    const choices = [
+      { id: 'again', label: 'Recalibrate', sub: 'Run the calibration again', icon: 'refresh' },
+      { id: 'go', label: 'Start browsing', sub: 'Look here and blink twice', icon: 'check', primary: true },
+    ];
+    // Not excellent yet: one more round of exercises is always on offer.
+    if (rating !== 'excellent') {
+      choices.splice(1, 0, { id: 'better', label: 'Make it even better', sub: 'A round of extra dots', icon: 'sparkle' });
+    }
+    const choice = await this.app.choose(ov, { top: false, choices, rowStyle: { paddingTop: '48vh' } });
     card.remove();
     this.app.gaze.setSuspended(true);
     ov.classList.add('solid');
     if (choice === 'go') sounds.success();
-    return choice === 'again';
+    return choice;
   }
 
   // -- blinks --------------------------------------------------------------------------------
@@ -889,7 +1050,12 @@ export class Calibrator {
     await this.countdown('Quick adjust', 'Look at each dot until it shrinks away.');
     this.say('');
     await this.showPoints(ADJUST_POINTS, 'adjust');
-    return this.finishAdjust();
+    const adjusted = await this.finishAdjust();
+    if (adjusted.fit && adjusted.fit.ok) {
+      const measured = await this.checkAccuracy();
+      if (measured) adjusted.validation = measured;
+    }
+    return adjusted;
   }
 
   // -- mouse-guided tune-up: continuous, mouse-labelled pursuit ----------------------------

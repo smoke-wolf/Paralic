@@ -62,9 +62,12 @@ If port 8000 is busy the next free one is used.
    good distance and evenly lit — a double blink skips it if you cannot move. Then look at each dot until it
    shrinks away: a dot waits until your eyes have settled on it, so slower eyes simply get more time. When
    asked, keep looking at the centre dot while you turn, nod and tilt your head a little (skip that if moving is
-   hard for you — just keep looking). Your personal neural networks are trained, five more dots measure the
-   accuracy, and finally you blink twice three times when the dot turns purple, so double blinks are tuned to
-   how *you* blink.
+   hard for you — just keep looking). Your personal neural networks are trained and five more dots measure the
+   accuracy. **If it is not yet good, up to three more short rounds run by themselves**: extra dots where the
+   tracking was least sure (between the grid, then edges and corners), a new network, and five new dots to
+   measure it — the better network always stays, so a round never makes it worse. *Make it even better* on the
+   results screen runs another round any time. Finally you blink twice three times when the dot turns purple,
+   so double blinks are tuned to how *you* blink.
 4. **Start browsing** – look at it and blink twice.
 
 | Gesture | What it does |
@@ -79,8 +82,8 @@ If port 8000 is busy the next free one is used.
 
 Each person's calibration is saved (numbers only, no images) in `data/users/<id>/`. Several people can share
 the computer: Paralic asks who is using it. Next time you can use your calibration as is, do a
-**Quick adjust** (eyes only: first back to where you sat while calibrating, then 9 dots, ~20 seconds) or a full
-calibration. Quick adjust and full calibration are also on the Home and Settings pages; the Lab page has a
+**Quick adjust** (eyes only: first back to where you sat while calibrating, then 9 dots and 5 dots that measure
+the result, ~30 seconds; if it is below *good* you can let it improve with extra rounds) or a full calibration. Quick adjust and full calibration are also on the Home and Settings pages; the Lab page has a
 **mouse-guided tune-up** for a helper (the mouse pointer marks where the eyes look). A calibration from an
 older version keeps working (a full calibration makes it more accurate; the old file is kept as a backup).
 
@@ -179,7 +182,8 @@ click. For a kiosk-style setup, launch the browser in full screen, e.g.
   rested on it. Each dot's frames are split into steady stretches where the mean eye position changes
   (measured in units of the person's own frame-to-frame noise); frames still on the previous dot, on the way,
   or glancing at the instructions are left out, and the page keeps a dot up until enough settled frames have
-  arrived.
+  arrived. A dot the eyes were never really on (closed, looking elsewhere) is spotted because the other dots
+  predict it badly (leave-one-dot-out with a small ridge model) and is left out of training.
 * **GazeNet** (`paralic/gazenet.py`) is a small multilayer perceptron written in NumPy: two tanh hidden
   layers (32 → 16) plus a linear skip connection that is initialised with ridge regression, trained with Adam
   and a Huber loss. The weight decay is chosen by *grouped cross-validation* (whole calibration dots are held

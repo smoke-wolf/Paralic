@@ -191,6 +191,89 @@ def test_validation_saves_profile_and_profile_loads(env, tmp_path, monkeypatch):
     np.testing.assert_allclose(s2.model.predict(vec), session.model.predict(vec), atol=1e-6)
 
 
+VAL_A = [(960, 600), (500, 300), (1400, 300), (1400, 900), (500, 900)]
+VAL_B = [(960, 480), (300, 540), (960, 160), (1620, 540), (960, 920)]
+
+
+def _validate(frame, session, points, **cmd):
+    for i, (sx, sy) in enumerate(points):
+        for _ in range(16):
+            frame(sx, sy, {"x": sx, "y": sy, "kind": "val", "pt": i})
+    return session.handle_command({"type": "validation_finish", **cmd})[0]
+
+
+def _refine_round(frame, session, looks=None, n=8):
+    """One improving round: extra dots (looking at `looks` instead, if given), a fit, new dots."""
+    started = session.handle_command({"type": "calibration_start", "mode": "refine"})[0]
+    assert started["ok"] and started["point_base"] >= 1000
+    rng = np.random.default_rng(started["round"])
+    for i in range(n):
+        sx, sy = float(rng.uniform(150, 1770)), float(rng.uniform(100, 980))
+        lx, ly = looks if looks else (sx, sy)
+        for _ in range(16):
+            frame(lx, ly, {"x": sx, "y": sy, "kind": "cal", "pt": started["point_base"] + i})
+    fit = session.handle_command({"type": "calibration_fit", "mode": "full"})[0]
+    assert fit["ok"]
+    return started
+
+
+def test_improving_rounds_keep_the_better_network(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    first = _validate(frame, session, VAL_A)
+    n_cal = len(session.data.of_kind("cal"))
+    started = _refine_round(frame, session)
+    assert started["round"] == 1
+    # The dots that measured the accuracy became ordinary calibration dots.
+    assert not session.data.of_kind("val") and len(session.data.of_kind("cal")) > n_cal
+    res = _validate(frame, session, VAL_B)
+    r = res["refine"]
+    assert r["round"] == 1 and r["kept"] in ("new", "previous")
+    assert res["mean_error_px"] == pytest.approx(min(r["before_px"], r["after_px"]), abs=0.1)
+    assert res["personal"]["model_history"][-1]["source"] == "refine"
+    assert first["ok"] and res["ok"] and res["saved"]
+
+
+def test_an_unhelpful_round_is_rolled_back(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    _validate(frame, session, VAL_A)
+    champion = session.model
+    # The person looked at one spot the whole round: the extra dots teach nonsense.
+    started = _refine_round(frame, session, looks=(960, 540))
+    res = _validate(frame, session, VAL_B)
+    assert res["refine"]["kept"] == "previous" and res["refine"]["after_px"] > res["refine"]["before_px"]
+    base = started["point_base"]
+    assert not [f for f in session.data.of_kind("cal") if base <= f.point < base + 1000]
+    assert session.model is not champion        # refitted with the new measuring dots, from the kept data
+
+
+def test_measuring_only_leaves_the_network_alone(env):
+    session, _, _, frame, calibrate = env
+    calibrate()
+    _validate(frame, session, VAL_A)
+    session.handle_command({"type": "calibration_start", "mode": "adjust"})
+    for i, (sx, sy) in enumerate([(960, 540), (200, 150), (1700, 150), (1700, 930), (200, 930)]):
+        for _ in range(16):
+            frame(sx, sy, {"x": sx, "y": sy, "kind": "adjust", "pt": i})
+    assert session.handle_command({"type": "calibration_fit", "mode": "adjust"})[0]["ok"]
+    model = session.model
+    version = model.meta["version"]
+    res = _validate(frame, session, VAL_B, refit=False)
+    assert res["ok"] and "refine" not in res and "refit" not in res
+    assert session.model is model and model.meta["version"] == version
+    assert res["personal"]["accuracy_px"] == pytest.approx(res["mean_error_px"], abs=0.1)
+    # Improving from there: the quick adjust's dots join the calibration dots.
+    started = session.handle_command({"type": "calibration_start", "mode": "refine"})[0]
+    assert started["ok"] and not session.data.of_kind("adjust") and not session.data.of_kind("val")
+
+
+def test_refine_needs_a_calibration(env):
+    session, *_ = env
+    reply = session.handle_command({"type": "calibration_start", "mode": "refine"})[0]
+    assert reply["ok"] is False
+
+
 def test_quick_adjust_corrects_offset(env):
     session, _, _, frame, calibrate = env
     calibrate()

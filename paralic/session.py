@@ -108,6 +108,9 @@ _GESTURE_RANGES = {"long_close_ms": (600, 3000), "hold_ms": (200, 1500), "long_p
                    "dwell_ms": (400, 3000), "nudge_speed": (15, 250), "nudge_deadzone": (2, 15)}
 _GESTURE_FLAGS = ("dwell", "left_forced", "right_forced", "hold_still", "head_nudge")
 
+# Point numbers of the extra dots of accuracy-improving round n start at n * this.
+REFINE_POINT_BASE = 1000
+
 # Reply message type of each command, so failures reach the same handler in the
 # browser as successes (the page waits for these types).
 _REPLY_TYPES = {
@@ -208,6 +211,9 @@ class TrackerSession:
         self._wink_recording: Optional[list[tuple]] = None
         # How long the eyes have rested on the calibration dot being recorded.
         self._settle = SettleTracker()
+        # An accuracy-improving round in progress: the model before it, the
+        # round number and where its extra dots' point numbers start.
+        self._refine: Optional[dict] = None
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         self.model: Optional[GazeNet] = None
         self.data = CalibrationData()
@@ -650,13 +656,31 @@ class TrackerSession:
     def _cmd_calibration_start(self, cmd: dict) -> list[dict]:
         mode = cmd.get("mode", "full")
         self._settle.reset()
+        if mode in ("adjust", "refine") and self.model is None:
+            return [{"type": "calibration_started", "ok": False, "error": "No calibration to improve"}]
         if mode == "adjust":
-            if self.model is None:
-                return [{"type": "calibration_started", "ok": False, "error": "No calibration to adjust"}]
             self.data.clear(["adjust"])
+            self._refine = None
+        elif mode == "refine":
+            # Another round to improve the accuracy: the dots that measured it
+            # (and a quick adjust's) are good fixations, so they become ordinary
+            # calibration dots, and new ones will measure the accuracy afresh.
+            # The current network stays the champion until a new one beats it.
+            rnd = (self._refine or {}).get("round", 0) + 1
+            first = max((f.point for f in self.data.of_kind("cal")), default=0) + 1
+            moved = {}
+            for f in self.data.frames:
+                if f.kind in ("val", "adjust"):
+                    key = (f.kind, f.point)
+                    moved.setdefault(key, first + len(moved))
+                    f.kind, f.point = "cal", moved[key]
+            base = REFINE_POINT_BASE * rnd
+            self._refine = {"champion": self.model, "round": rnd, "base": base}
+            return [{"type": "calibration_started", "ok": True, "mode": mode, "round": rnd, "point_base": base}]
         else:
             # Keep the fine-tuning samples: they still describe this person's eyes.
             self.data.clear(["cal", "head", "val", "adjust"])
+            self._refine = None
         return [{"type": "calibration_started", "ok": True, "mode": mode}]
 
     def _cmd_calibration_fit(self, cmd: dict) -> list[dict]:
@@ -681,13 +705,35 @@ class TrackerSession:
         if self.model is None:
             raise CalibrationError("Calibrate first")
         result = evaluate_validation(self.model, self.data)
-        # Use the validation dots as extra training data for the final network.
-        try:
-            model, info = fit_full_calibration(self.data, include_validation=True)
-            self.model = model
-            result["refit"] = info
-        except CalibrationError:
-            log.info("Refit with validation data failed; keeping the first model")
+        refine = self._refine
+        if refine is not None and refine["champion"] is not self.model:
+            # An improving round: both networks are measured on the same new
+            # dots, which neither was trained on, and the better one stays.
+            before = evaluate_validation(refine["champion"], self.data)
+            kept = "new" if result["mean_error_px"] <= before["mean_error_px"] else "previous"
+            summary = {"round": refine["round"], "before_px": round(before["mean_error_px"], 1),
+                       "after_px": round(result["mean_error_px"], 1), "kept": kept}
+            if kept == "previous":
+                # The extra dots did not help (the eyes may have been elsewhere): forget them.
+                base = refine["base"]
+                self.data.frames = [f for f in self.data.frames
+                                    if not (f.kind == "cal" and base <= f.point < base + REFINE_POINT_BASE)]
+                self.model = refine["champion"]
+                result = before
+            result["refine"] = summary
+            refine["champion"] = self.model
+        # Use the validation dots as extra training data for the final network
+        # (unless only measuring, e.g. after a quick adjust).
+        refit = bool(cmd.get("refit", True))
+        if refit:
+            try:
+                model, info = fit_full_calibration(self.data, include_validation=True)
+                self.model = model
+                result["refit"] = info
+            except CalibrationError:
+                log.info("Refit with validation data failed; keeping the first model")
+            if refine is not None:
+                refine["champion"] = self.model
         self.stabilizer.reset()
         # Personalise smoothing and the button magnet from the measured precision / accuracy.
         old_sm = self.personal.get("smoothing") or {}
@@ -696,8 +742,10 @@ class TrackerSession:
         self.personal["magnet"] = {**recommend_magnet(result["mean_error_px"]), "scale": old_mg.get("scale", 1.0),
                                    "off": old_mg.get("off", False)}
         self.profile_meta["accuracy_px"] = round(result["mean_error_px"], 1)
-        self._record_model("calibration", accuracy_px=round(result["mean_error_px"], 1),
-                           cv_error_px=self.model.meta.get("cv_error_px"))
+        if refit:
+            self._record_model("refine" if refine is not None else "calibration",
+                               accuracy_px=round(result["mean_error_px"], 1),
+                               cv_error_px=self.model.meta.get("cv_error_px"))
         self._apply_effective()
         saved = False
         if cmd.get("save", True):
@@ -734,6 +782,7 @@ class TrackerSession:
         self.model = model
         self.data = data
         self.profile_meta = meta
+        self._refine = None
         self.stabilizer.reset()
         if not model.eyes:
             # Saved before one-eye networks existed: add them now (a second or
@@ -765,6 +814,7 @@ class TrackerSession:
         self.model = None
         self.data = CalibrationData()
         self.profile_meta = {}
+        self._refine = None
         self._overrides = {}
         self._blink_recording = None
         self._wink_recording = None

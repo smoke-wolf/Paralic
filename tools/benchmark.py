@@ -144,6 +144,133 @@ def bench_labels(n_people: int) -> dict:
     return out
 
 
+# The page's improving rounds (web/js/calibration.js improveAccuracy): measuring
+# dots per round, and the places extra dots are chosen from.
+VALIDATION_SETS = [
+    [(0.5, 0.55), (0.27, 0.28), (0.73, 0.28), (0.73, 0.8), (0.27, 0.8)],
+    [(0.5, 0.45), (0.15, 0.5), (0.5, 0.15), (0.85, 0.5), (0.5, 0.85)],
+    [(0.5, 0.5), (0.2, 0.15), (0.8, 0.15), (0.8, 0.85), (0.2, 0.85)],
+    [(0.5, 0.6), (0.38, 0.33), (0.62, 0.33), (0.9, 0.7), (0.1, 0.7)],
+]
+BETWEEN = [(x, y) for x in (0.17, 0.39, 0.61, 0.83) for y in (0.22, 0.5, 0.78)]
+EDGES = [(0.03, 0.05), (0.5, 0.04), (0.97, 0.05), (0.97, 0.5), (0.97, 0.95), (0.5, 0.96), (0.03, 0.95),
+         (0.03, 0.5), (0.28, 0.04), (0.72, 0.96)]
+DIAG = math.hypot(SCREEN_W, SCREEN_H)
+
+
+def refine_points(measured, rnd: int, n: int = 9) -> list[tuple[float, float]]:
+    """Python twin of refinePoints() in web/js/calibration.js."""
+    def error_at(p):
+        w = [1 / (0.02 + (m[0] - p[0]) ** 2 + (m[1] - p[1]) ** 2) for m in measured]
+        return sum(wi * m[2] for wi, m in zip(w, measured)) / sum(w)
+    shift = 0.04 if rnd >= 3 else 0.0
+    pool = BETWEEN if rnd == 1 else EDGES if rnd == 2 else BETWEEN + EDGES
+    pool = [(min(0.97, max(0.03, x + (shift if i % 2 else -shift))), y) for i, (x, y) in enumerate(pool)]
+    picked = []
+    for p in sorted(pool, key=error_at, reverse=True):
+        if len(picked) >= n - 1:
+            break
+        if all(math.hypot(q[0] - p[0], q[1] - p[1]) >= 0.16 for q in picked):
+            picked.append(p)
+    path = [(0.5, 0.5)]
+    while picked:
+        c = path[-1]
+        path.append(picked.pop(min(range(len(picked)), key=lambda i: math.hypot(picked[i][0] - c[0], picked[i][1] - c[1]))))
+    return path
+
+
+def record_dots(data, user, points, kind, base, rng, t, latency=0.35, glance_p=0.15, distracted=0.0):
+    """Dots recorded as the page does (settled count, at most 4 s), eyes as in
+    label_session; with probability ``distracted`` a dot is not looked at at
+    all (the eyes rest somewhere else the whole time)."""
+    tracker = SettleTracker()
+    prev = (SCREEN_W / 2, SCREEN_H / 2)
+    for i, (fx, fy) in enumerate(points):
+        sx, sy = fx * SCREEN_W, fy * SCREEN_H
+        lat = latency * float(np.exp(0.25 * rng.standard_normal()))
+        glance, g0, k = rng.random() < glance_p, 0.6 + rng.uniform(0.0, 0.4), 0
+        away = None
+        if i > 0 and rng.random() < distracted:
+            away = (float(rng.uniform(0.1, 0.9)) * SCREEN_W, float(rng.uniform(0.1, 0.9)) * SCREEN_H)
+        while True:
+            ts = 0.6 + k / FPS
+            gx, gy = prev if ts < lat else (sx, sy)
+            if glance and g0 <= ts < g0 + 0.35:
+                gx, gy = SCREEN_W / 2, SCREEN_H * 0.85
+            if away:
+                gx, gy = away
+            f = user.features(gx, gy, jitter_head(rng, Head(), 0.3))
+            data.add(LabeledFrame(t=t, features=f, target=(sx, sy), kind=kind, point=base + i))
+            t += 1 / FPS
+            k += 1
+            if tracker.update((kind, base + i, (sx, sy)), f) >= (16 if kind == "cal" else 14) or k / FPS >= 4.0:
+                break
+        prev = away or (sx, sy)
+    return t
+
+
+def bench_refine(n_people: int) -> dict:
+    """People whose first calibration went badly - noisy tracking, and a third
+    of the dots not really looked at (tired, distracted) - then up to 3
+    improving rounds as the page runs them, paying attention. Accuracy
+    measured on separate test points, never used in a round."""
+    good_px, fair_px = 0.055 * DIAG, 0.085 * DIAG
+    rows = []
+    for k in range(n_people):
+        rng = np.random.default_rng(500 + k)
+        hard = dict(noise=3.0 + 0.5 * (k % 3))
+        user = VirtualUser(seed=300 + k, **hard)
+        data, t = CalibrationData(), time.time() - 3600
+        t = record_dots(data, user, [(x / SCREEN_W, y / SCREEN_H) for x, y in grid21()], "cal", 0, rng, t,
+                        distracted=0.33)
+        for j in range(150):
+            ph = 2 * np.pi * j / 150
+            h = Head(x=3 * np.sin(ph), y=9 + 2 * np.sin(2 * ph), dist=60 + 2 * np.cos(ph), yaw=0.12 * np.sin(ph),
+                     pitch=0.09 * np.sin(2 * ph + 0.5))
+            data.add(LabeledFrame(t=t, features=user.features(SCREEN_W / 2, SCREEN_H / 2, h),
+                                  target=(SCREEN_W / 2, SCREEN_H / 2), kind="head", point=0))
+            t += 1 / FPS
+        model, _ = fit_full_calibration(data)
+        t = record_dots(data, user, VALIDATION_SETS[0], "val", 0, rng, t, distracted=0.2)
+        measured = calibration.evaluate_validation(model, data)
+        model, _ = fit_full_calibration(data, include_validation=True)
+        # The same test fixations (a fresh copy of the person) before and after.
+        before = fixation_error(model, VirtualUser(seed=300 + k, **hard), n=80)
+        rounds = 0
+        for rnd in range(1, 4):
+            if measured["mean_error_px"] < good_px:
+                break
+            rounds += 1
+            first = max((f.point for f in data.of_kind("cal")), default=0) + 1
+            moved = {}
+            for f in data.frames:
+                if f.kind == "val":
+                    moved.setdefault(f.point, first + len(moved))
+                    f.kind, f.point = "cal", moved[f.point]
+            pts = [(p["target"][0] / SCREEN_W, p["target"][1] / SCREEN_H, p["error"]) for p in measured["points"]]
+            base = 1000 * rnd
+            t = record_dots(data, user, refine_points(pts, rnd), "cal", base, rng, t)
+            challenger, _ = fit_full_calibration(data)
+            t = record_dots(data, user, VALIDATION_SETS[rnd], "val", 0, rng, t)
+            old = calibration.evaluate_validation(model, data)
+            new = calibration.evaluate_validation(challenger, data)
+            if new["mean_error_px"] > old["mean_error_px"]:
+                data.frames = [f for f in data.frames if not (f.kind == "cal" and base <= f.point < base + 1000)]
+                measured = old
+            else:
+                measured = new
+            model, _ = fit_full_calibration(data, include_validation=True)
+        after = fixation_error(model, VirtualUser(seed=300 + k, **hard), n=80)
+        rows.append((before, after, rounds))
+    b = np.array([r[0] for r in rows])
+    a = np.array([r[1] for r in rows])
+    rating = lambda e: "good+" if e < good_px else "fair" if e < fair_px else "poor"  # noqa: E731
+    return {"n": len(rows), "before_px": med(b), "after_px": med(a), "rounds": float(np.mean([r[2] for r in rows])),
+            "improved": int(np.sum(a < b - 1)), "worse": int(np.sum(a > b + 1)),
+            "before_ratings": {r: int(sum(rating(e) == r for e in b)) for r in ("good+", "fair", "poor")},
+            "after_ratings": {r: int(sum(rating(e) == r for e in a)) for r in ("good+", "fair", "poor")}}
+
+
 ADJUST_5 = [(0.5, 0.5), (0.12, 0.14), (0.88, 0.14), (0.88, 0.86), (0.12, 0.86)]
 ADJUST_9 = [(0.5, 0.5), (0.1, 0.12), (0.5, 0.12), (0.9, 0.12), (0.9, 0.5), (0.9, 0.88), (0.5, 0.88),
             (0.1, 0.88), (0.1, 0.5)]
@@ -623,6 +750,25 @@ def report(results: dict, seconds: float) -> str:
         w(f"| {name} | {fmt(r['none'], ' px')} | {fmt(r['five'], ' px')} | {fmt(r['nine'], ' px')} | "
           f"{fmt(r['back'], ' px')} |")
     w("")
+    rf = results["refine"]
+    w("## Improving rounds when the accuracy is below good")
+    w("")
+    w(f"{rf['n']} simulated people whose first calibration went badly: noisy tracking, and a third of the dots not "
+      "really looked at (tired, distracted). While the measured accuracy is below *good*, up to 3 rounds run as "
+      "on the page: 9 extra dots where the measurement says the tracking is least sure (between the grid, then "
+      "edges and corners, then both), a new network, and 5 new measuring dots on which the new and the previous "
+      "network are compared; the better one stays. Error measured on separate test points that no round uses.")
+    w("")
+    w("| | Before the rounds | After |")
+    w("| --- | --- | --- |")
+    w(f"| Median error | {fmt(rf['before_px'], ' px')} | {fmt(rf['after_px'], ' px')} |")
+    br, ar = rf["before_ratings"], rf["after_ratings"]
+    w(f"| Good or better / fair / poor | {br['good+']} / {br['fair']} / {br['poor']} | "
+      f"{ar['good+']} / {ar['fair']} / {ar['poor']} |")
+    w("")
+    w(f"Rounds run on average: {rf['rounds']:.1f}; better for {rf['improved']} people, worse for {rf['worse']} "
+      "(by more than 1 px).")
+    w("")
     ms = results["model_search"]
     w("## Gaze network: per-person model search")
     w("")
@@ -724,6 +870,7 @@ def main(argv=None) -> int:
     steps = [
         ("labels", lambda: bench_labels(args.people)),
         ("adjust", lambda: bench_adjust(args.people)),
+        ("refine", lambda: bench_refine(args.people)),
         ("model_search", lambda: bench_model_search(args.people)),
         ("finetune", lambda: bench_finetune(args.people)),
         ("eyes", lambda: bench_eyes(args.people)),
