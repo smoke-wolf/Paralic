@@ -86,6 +86,8 @@ GESTURE_DEFAULTS = {
     "dwell": False,          # click by resting the eyes on a button
     "dwell_ms": 1000,
     "tracking_eye": "auto",  # which network leads: auto | both | left | right
+    "left_forced": False,    # use an eye for winks even though the wink test found it unreliable
+    "right_forced": False,
 }
 _GESTURE_CHOICES = {
     "left_hold": ("drag", "menu", "off"), "right_hold": ("drag", "menu", "off"),
@@ -259,7 +261,9 @@ class TrackerSession:
             magnet = ({"radius_px": 0.0, "pull": 0.0} if mg.get("off") else
                       {"radius_px": round(float(mg["radius_px"]) * float(mg.get("scale", 1.0)), 1),
                        "pull": float(mg.get("pull", 0.3))})
-        signal = blink.get("signal") if blink.get("signal") in BLINK_SIGNALS else "both"
+        # Thresholds learned before per-eye signals existed were measured on the average.
+        signal = (blink["signal"] if blink.get("signal") in BLINK_SIGNALS
+                  else "mean" if "sensitivity" in blink else "both")
         return {
             "smoothing_level": round(level, 2),
             "auto_smoothing_level": round(auto_level, 2),

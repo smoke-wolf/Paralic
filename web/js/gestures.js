@@ -180,6 +180,7 @@ export class GestureController {
     const p = this.press;
     const shown = this.gaze && this.gaze.point;       // pulled towards drop zones by the magnet
     const point = this.gaze && this.gaze.rawPoint;    // where the eyes are
+    if (this.lock && !this.ready()) this.endLock(true); // paused or recalibrating: put it back
     if (this.lock && shown) this.lock.move(shown);
     if (!p || p.consumed || p.inMenu || !point) return;
     if (!this.ready()) {

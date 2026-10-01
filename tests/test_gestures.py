@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from paralic.blink import BlinkConfig, BlinkDetector
-from paralic.gestures import (WinkConfig, WinkDetector, analyze_winks, blink_signal, wink_config)
+from paralic.gestures import (EyeWinkConfig, WinkConfig, WinkDetector, analyze_winks, blink_signal,
+                              wink_config)
 from paralic.personalize import PersonalizationError, analyze_blinks
 
 FPS = 30.0
@@ -116,6 +117,18 @@ def test_droopy_eyelid_adapts_and_still_winks():
     ev = run(d, open_eyes(90, left=0.5) + wink("left", 25, level=0.92) + open_eyes(30, left=0.5, seed=2))
     assert types(ev) == ["wink_start", "wink_end"]
     assert d.baseline("left") == pytest.approx(0.5, abs=0.03)
+
+
+def test_looking_down_with_a_drooping_lid_is_not_a_wink():
+    # Both lids drop by the same amount while reading the bottom of the screen;
+    # the drooping one ends up past its threshold, the other not. Learning only
+    # one of the baselines would fake a wink.
+    d = WinkDetector(WinkConfig(left=EyeWinkConfig(rise=0.17, asym=0.15)))
+    ev = run(d, open_eyes(90, left=0.5) + open_eyes(150, left=0.8, right=0.5, seed=2)
+             + open_eyes(60, left=0.5, seed=3))
+    assert ev == []
+    ev = run(d, wink("left", 25, level=0.92) + open_eyes(30, left=0.5, seed=4), t0=10.0)
+    assert types(ev) == ["wink_start", "wink_end"]
 
 
 def test_squinting_the_other_eye_is_fine():

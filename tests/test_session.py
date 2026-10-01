@@ -504,3 +504,37 @@ def test_dwell_experiment_adopts_a_new_dwell_time(env):
     res = session.handle_command({"type": "experiment_log", "experiment": "dwell", "trials": trials})[0]
     assert res["decision"] == "adopt" and res["best"] == "faster"
     assert res["personal"]["gestures"]["dwell_ms"] == 750
+
+
+def test_an_eye_that_failed_the_wink_test_can_be_forced_back_on(env):
+    session, _, _, frame, _ = env
+    session.handle_command({"type": "wink_calibration_start"})
+    # Asked to close the left eye, this person closes both; the right eye winks fine.
+    for phase, n in (("rest", 40), ("left", 60), ("rest", 30), ("right", 60), ("rest", 30)):
+        for _ in range(n):
+            if phase == "left":
+                frame(closure=0.85, gesture=phase)
+            else:
+                frame(closed="right" if phase == "right" else None, gesture=phase)
+    res = session.handle_command({"type": "wink_calibration_finish"})[0]
+    assert not res["left"]["ok"] and res["right"]["ok"]
+    assert res["personal"]["winks"] == {"left": False, "right": True}
+    forced = session.handle_command({"type": "gestures_set", "gestures": {"left_forced": True}})[0]
+    assert forced["personal"]["winks"] == {"left": True, "right": True}
+    # A new test decides again.
+    session.handle_command({"type": "wink_calibration_start"})
+    for phase, n in (("rest", 40), ("left", 60), ("rest", 30)):
+        for _ in range(n):
+            frame(closure=0.85 if phase == "left" else 0.12, gesture=phase)
+    again = session.handle_command({"type": "wink_calibration_finish"})[0]
+    assert again["personal"]["winks"]["left"] is False
+
+
+def test_blink_profiles_from_before_per_eye_signals_keep_the_average(env):
+    session, *_ = env
+    session.personal["blink"] = {"sensitivity": 0.25, "min_threshold": 0.2, "double_gap_ms": 600}
+    session._apply_effective()
+    assert session.blink_mode == "mean"
+    session.personal["blink"]["signal"] = "left"
+    session._apply_effective()
+    assert session.blink_mode == "left"

@@ -66,6 +66,7 @@ class WinkConfig:
     asym_min: float = 0.20          # default asymmetry between the eyes
     max_hold_s: float = 60.0
     missing_reset_ms: float = 600.0
+    adapt_after_s: float = 2.0      # a lid that stays this "closed" this long (not winking) is its new normal
     baseline_window_s: float = 2.0
     initial_baseline: float = 0.25
     left: EyeWinkConfig = field(default_factory=EyeWinkConfig)
@@ -105,6 +106,7 @@ class WinkDetector:
         # An eye must be seen open before it can wink (an eye that looks closed
         # from the start - a patch, a drooping lid - never triggers a press).
         self._armed = {e: False for e in EYES}
+        self._high_since: dict[str, Optional[float]] = {e: None for e in EYES}
         self.state = IDLE
         self.eye: Optional[str] = None
         self.since = 0.0
@@ -202,11 +204,23 @@ class WinkDetector:
                 if t - self.since > cfg.max_hold_s:
                     events.extend(self._finish(t, cancelled=True))
 
-        # Baselines: learn from eyes that are open (never from a closed, winking eye).
+        # Baselines: learn from open eyes, never from a winking eye. A lid that
+        # stays low for a while without a wink - a drooping lid, an eye patch,
+        # looking at the bottom of the screen - becomes the new normal. Both
+        # eyes learn together: if one lid is up and the other down (both drop
+        # when looking down, but not equally far past their thresholds), moving
+        # only one baseline would fake a wink.
+        winking = self.winking
+        high = {e: c[e] >= self.thresholds(e)[0] for e in EYES}
         for e in EYES:
-            if e == self.winking:
-                continue
-            if c[e] < self.thresholds(e)[0]:
+            if e == winking or not high[e]:
+                self._high_since[e] = None
+            elif self._high_since[e] is None:
+                self._high_since[e] = t
+        settled = {e: self._high_since[e] is not None and t - self._high_since[e] >= cfg.adapt_after_s
+                   for e in EYES}
+        if winking is None and all(not high[e] or settled[e] for e in EYES):
+            for e in EYES:
                 self._add_sample(e, t, c[e])
         return events
 
@@ -243,8 +257,10 @@ def wink_config(personal: dict, gestures: Optional[dict] = None) -> WinkConfig:
         cfg.hold_ms = float(np.clip(g["hold_ms"], 200.0, 1500.0))
     # Winks must be clearly more lopsided than this person's ordinary blinks,
     # and a held wink clearly longer than a blink.
+    blink_floor = 0.0
     if blink.get("blink_asym") is not None:
-        cfg.asym_min = float(np.clip(max(cfg.asym_min, 1.5 * float(blink["blink_asym"])), 0.12, 0.6))
+        blink_floor = float(np.clip(1.5 * float(blink["blink_asym"]), 0.0, 0.6))
+        cfg.asym_min = max(cfg.asym_min, blink_floor)
     if blink.get("blink_ms") is not None:
         cfg.hold_ms = max(cfg.hold_ms, float(blink["blink_ms"]) * 1.5)
     for eye in EYES:
@@ -252,7 +268,7 @@ def wink_config(personal: dict, gestures: Optional[dict] = None) -> WinkConfig:
         w = wink.get(eye) or {}
         if w.get("ok"):
             ec.rise = float(w["threshold_rise"])
-            ec.asym = float(max(w["threshold_asym"], 0.8 * cfg.asym_min))
+            ec.asym = float(max(w["threshold_asym"], blink_floor))
         mapping = g.get(f"{eye}_hold", "drag")
         ec.enabled = mapping != "off" or g.get(f"{eye}_quick", "off") != "off"
         if w and not w.get("ok") and not g.get(f"{eye}_forced"):
