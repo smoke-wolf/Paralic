@@ -105,7 +105,7 @@ class Channel extends Emitter {
       if (!this.send(cmd)) {
         clearTimeout(entry.timer);
         waiters.pop();
-        reject(new Error('Not connected to the eye tracker'));
+        reject(new Error('Not connected to the tracker'));
       }
     });
   }

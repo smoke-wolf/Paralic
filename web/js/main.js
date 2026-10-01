@@ -230,7 +230,8 @@ class App {
     if (!this.tracker || this.calibrator.running) return;
     const ov = this.openOverlay('solid');
     await this.pickPerson(ov);
-    await this.enterAsPerson(ov);
+    if (this.state.handMode) await this.enterHandMode(ov);
+    else await this.enterAsPerson(ov);
   }
 
   // -- chrome: nav, pause, keyboard ---------------------------------------------------
@@ -425,7 +426,7 @@ class App {
     }
     const tips = [
       ['camera', 'Allow camera access when your browser asks. Video never leaves this computer.'],
-      ['sun', 'Light your face evenly from the front and sit about an arm’s length from the screen.'],
+      ['sun', 'Light your face evenly from the front and sit about an arm’s length from the screen — or, with a hand, light it well and hold it 40–60 cm from the camera, palm facing it.'],
       ['eye', 'With your eyes: look to move the cursor, blink twice to click, look at the arrows on the right to scroll.'],
       ['grab', 'With your hand: point with your index finger, pinch to click, pinch and move up or down to scroll.'],
     ];
@@ -750,7 +751,7 @@ class App {
   /** Run the hand setup: 'full', or 'point' (re-point only, keeps the pinch). */
   async handSetup(kind = 'full') {
     if (!this.state.handMode || !this.tracker || this.state.simulated) {
-      toast('The hand setup needs hand mode (Settings → Control with → Hand)', 'warn');
+      toast('The hand setup needs hand mode (Settings → Control with → Hands)', 'warn');
       return { ok: false };
     }
     if (!this.handCalibrator) this.handCalibrator = new HandCalibrator(this);
