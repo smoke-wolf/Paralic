@@ -55,7 +55,8 @@ from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDet
 from .calibration import (FIXATION_KINDS, CalibrationData, CalibrationError, LabeledFrame, ProfileStore,
                           SettleTracker, calibrated_pose, evaluate_validation, fit_adjustment, fit_eye_models,
                           fit_full_calibration)
-from .faceprint import MIN_SAMPLES, FaceRecognizer, FaceSample, choose_samples, make_sample
+from .face_select import FaceSelector, face_box
+from .faceprint import MARGIN, MIN_SAMPLES, FaceRecognizer, FaceSample, choose_samples, make_sample
 from .features import extract_features, face_lighting, mesh_overlay, overlay_points
 from .filters import GazeStabilizer
 from .gazenet import GazeNet, ModelConfig
@@ -268,6 +269,8 @@ class TrackerSession:
         self._face_dirty_since = 0.0
         self._face_recent: deque = deque(maxlen=4)
         self._face_check = {"next": 0.0, "hits": 0, "quiet_until": 0.0}
+        # Several faces in view: which one is this person's (see face_select.py).
+        self._faces = FaceSelector()
         self.stabilizer = GazeStabilizer(smoothing_params(SMOOTHING_LEVELS["medium"]))
         # System-wide ("control my whole computer") desktop cursor control. Off
         # by default; constructing the OSController is a safe no-op off macOS.
@@ -460,7 +463,10 @@ class TrackerSession:
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"decode: {exc}"}]
 
         try:
-            obs = self.tracker.process(rgb, int(t * 1000))
+            if self.hand is not None:
+                obs, crowd = self._observe_hands(rgb, t)
+            else:
+                obs, crowd = self._observe_faces(rgb, t)
         except Exception as exc:  # a MediaPipe failure should not end the session
             self._tracker_errors += 1
             if self._tracker_errors in (1, 10) or self._tracker_errors % 500 == 0:
@@ -469,11 +475,17 @@ class TrackerSession:
             return [{"type": "frame", "id": frame_id, "face": False, "error": f"tracker: {exc}"}]
         self._frame_times.append(t)
         if self.hand is not None:
-            return self._hand_frame(t, frame_id, header, obs, started)
+            return self._hand_frame(t, frame_id, header, obs, started, crowd)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id}
         face_events: list[dict] = []
         features = raw = None
         winking = None
+        if crowd is not None:
+            # Someone else is (or was just) in view: who is followed, who is ignored.
+            msg.update(faces=crowd["faces"], you=crowd["you"], others=crowd["others"])
+            if obs is None and crowd["faces"]:
+                msg["waiting"] = True             # faces in view, but not this person's
+                face_events.extend(self._other_face(crowd, rgb, t))
 
         if obs is None:
             if t - self._face_seen > FACE_LOST_S:
@@ -612,12 +624,78 @@ class TrackerSession:
                 out.append(self.system.state())
         return out
 
-    def _hand_frame(self, t: float, frame_id: Any, header: dict, obs, started: float) -> list[dict]:
+    def _observe_faces(self, rgb: np.ndarray, t: float):
+        """The person's face among those in view, and - when others are or were
+        just around - what the page shows about them: (observation or None,
+        {"faces", "you", "others", "observations"} or None)."""
+        process_all = getattr(self.tracker, "process_all", None)
+        if process_all is not None:
+            faces = process_all(rgb, int(t * 1000))
+        else:
+            one = self.tracker.process(rgb, int(t * 1000))
+            faces = [] if one is None else [one]
+        boxes = []
+        for f in faces:
+            try:
+                boxes.append(face_box(f.points_px, f.image_size))
+            except (TypeError, ValueError, IndexError):
+                return (faces[0] if len(faces) == 1 else None), None      # test doubles carry no points
+        scores = None
+        rec = self._face_recognizer() if self._face_enabled() and len(faces) > 1 else None
+        uid = self.user["id"]
+        if rec is not None and uid in rec.prints:
+            def scores() -> list[float]:
+                out = []
+                for f in faces:
+                    sample = make_sample(rgb, f.points_px, t=self.wall())
+                    rel = rec.relative_scores([sample]) if sample is not None else {}
+                    own = rel.get(uid, float("inf"))
+                    # Someone else's face print fits clearly better: not this person.
+                    if rel and min(rel.values()) * MARGIN < own:
+                        own = float("inf")
+                    out.append(own)
+                return out
+        i = self._faces.select(t, boxes, scores)
+        crowd = None
+        waiting = i is None and bool(faces)
+        if len(faces) > 1 or (waiting and self._faces.crowded):
+            crowd = {"faces": len(faces), "you": boxes[i].bounds() if i is not None else None,
+                     "others": [b.bounds() for k, b in enumerate(boxes) if k != i], "observations": faces}
+        return (faces[i] if i is not None else None), crowd
+
+    def _other_face(self, crowd: dict, rgb: np.ndarray, t: float) -> list[dict]:
+        """Nobody here is this person: the face print may still say who it is
+        (recognising at the start, or offering to switch) - never learning it."""
+        if self._face_trust == self.user["id"] or t < self._face_next or not self._face_wanted(t):
+            return []
+        self._face_next = t + FACE_SAMPLE_GAP_S
+        try:
+            sample = make_sample(rgb, crowd["observations"][0].points_px, t=self.wall())
+        except Exception:  # a face print must never break tracking
+            log.debug("Face description failed", exc_info=True)
+            return []
+        return [] if sample is None else self._face_frame(sample, t)
+
+    def _observe_hands(self, rgb: np.ndarray, t: float):
+        """The hand in control (see HandSelector) and how many hands are in view."""
+        process_all = getattr(self.tracker, "process_all", None)
+        if process_all is not None:
+            hands = process_all(rgb, int(t * 1000))
+        else:
+            one = self.tracker.process(rgb, int(t * 1000))
+            hands = [] if one is None else [one]
+        i = self.hand.selector.select(t, [h.points_norm for h in hands])
+        return (hands[i] if i is not None else None), len(hands)
+
+    def _hand_frame(self, t: float, frame_id: Any, header: dict, obs, started: float,
+                    hands: int = 1) -> list[dict]:
         """Hand mode: the fingertip is the cursor, a pinch clicks (see hand_control.py)."""
         label = header.get("label") if isinstance(header.get("label"), dict) else None
         fields, messages, events = self.hand.frame(t, frame_id, None if obs is None else obs.points_norm,
                                                    label, self.screen)
         msg: dict[str, Any] = {"type": "frame", "id": frame_id, **fields}
+        if hands > 1:
+            msg["hands"] = hands              # only the hand in control counts
         msg["ms"] = round((time.perf_counter() - started) * 1000.0, 1)
         msg["fps"] = self._fps()
         out = [msg, *messages]
@@ -959,6 +1037,7 @@ class TrackerSession:
         self.stabilizer.reset()
         self.blink.reset()
         self.wink.reset()
+        self._faces.reset()
         self._apply_effective()
         self._load_hand()
 

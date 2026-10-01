@@ -25,9 +25,13 @@ class HandObservation:
 
 
 class HandTracker:
-    """Runs HandLandmarker in VIDEO mode (it tracks the hand between frames)."""
+    """Runs HandLandmarker in VIDEO mode (it tracks the hands between frames).
 
-    def __init__(self, model_bytes: bytes, *, num_hands: int = 1, min_detection: float = 0.5,
+    It reports up to ``num_hands`` hands, so the session can keep following
+    the hand in control when another one comes into view.
+    """
+
+    def __init__(self, model_bytes: bytes, *, num_hands: int = 2, min_detection: float = 0.5,
                  min_presence: float = 0.5, min_tracking: float = 0.5):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
@@ -44,27 +48,32 @@ class HandTracker:
         self._landmarker = vision.HandLandmarker.create_from_options(options)
         self._last_ts = -1
 
-    def process(self, rgb: np.ndarray, timestamp_ms: int) -> Optional[HandObservation]:
+    def process_all(self, rgb: np.ndarray, timestamp_ms: int) -> list[HandObservation]:
+        """Every hand in the frame."""
         ts = max(int(timestamp_ms), self._last_ts + 1)      # VIDEO mode needs increasing timestamps
         self._last_ts = ts
         h, w = rgb.shape[:2]
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
         result = self._landmarker.detect_for_video(image, ts)
-        if not result.hand_landmarks:
-            return None
-        lms = result.hand_landmarks[0]
-        pts = np.empty((len(lms), 3), dtype=np.float64)
-        for i, p in enumerate(lms):
-            pts[i, 0] = p.x
-            pts[i, 1] = p.y
-            pts[i, 2] = p.z
-        hand = ""
-        if result.handedness:
+        hands = []
+        for k, lms in enumerate(result.hand_landmarks or []):
+            pts = np.empty((len(lms), 3), dtype=np.float64)
+            for i, p in enumerate(lms):
+                pts[i, 0] = p.x
+                pts[i, 1] = p.y
+                pts[i, 2] = p.z
+            hand = ""
             try:
-                hand = result.handedness[0][0].category_name
-            except (IndexError, AttributeError):  # pragma: no cover
+                hand = result.handedness[k][0].category_name
+            except (IndexError, AttributeError, TypeError):  # pragma: no cover
                 hand = ""
-        return HandObservation(points_norm=pts, image_size=(w, h), handedness=hand)
+            hands.append(HandObservation(points_norm=pts, image_size=(w, h), handedness=hand))
+        return hands
+
+    def process(self, rgb: np.ndarray, timestamp_ms: int) -> Optional[HandObservation]:
+        """The first hand, or None."""
+        hands = self.process_all(rgb, timestamp_ms)
+        return hands[0] if hands else None
 
     def close(self) -> None:
         lm, self._landmarker = getattr(self, "_landmarker", None), None

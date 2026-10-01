@@ -27,7 +27,7 @@ import numpy as np
 
 from .filters import OneEuroFilter, OneEuroParams
 from .hand_gestures import (HandCalibration, HandGestureConfig, HandGestureRecognizer, PointingMap,
-                            estimate_pinch_thresholds, split_pinch_cycle)
+                            estimate_pinch_thresholds, palm_centre, palm_width, split_pinch_cycle)
 
 HAND_PROFILE_VERSION = 1
 MIN_POINT_SAMPLES = 4
@@ -45,6 +45,36 @@ class HandSetupError(ValueError):
     """The hand setup could not be fitted (the page shows the message)."""
 
 
+class HandSelector:
+    """Another hand in view - someone else's, or the person's other hand: keep
+    following the hand in control while it stays in view; when it is gone, the
+    largest hand (the one nearest the camera) takes over."""
+
+    FOLLOW_GAP_S = 0.6
+    FOLLOW_JUMP = 1.5          # palm widths the followed hand may move between frames
+
+    def __init__(self):
+        self.centre: Optional[np.ndarray] = None
+        self.width = 1.0
+        self.seen_at = -np.inf
+
+    def select(self, t: float, hands: list[np.ndarray]) -> Optional[int]:
+        if not hands:
+            return None
+        pts = [np.asarray(h, float)[:, :2] for h in hands]
+        centres = [palm_centre(p) for p in pts]
+        widths = [palm_width(p) for p in pts]
+        pick = None
+        if self.centre is not None and t - self.seen_at <= self.FOLLOW_GAP_S:
+            k = min(range(len(pts)), key=lambda j: float(np.hypot(*(centres[j] - self.centre))))
+            if float(np.hypot(*(centres[k] - self.centre))) / self.width <= self.FOLLOW_JUMP:
+                pick = k
+        if pick is None:
+            pick = max(range(len(pts)), key=lambda j: widths[j])
+        self.centre, self.width, self.seen_at = centres[pick], widths[pick], t
+        return pick
+
+
 def _round(v, nd=3):
     return None if v is None else round(float(v), nd)
 
@@ -52,6 +82,7 @@ def _round(v, nd=3):
 class HandControl:
     def __init__(self, config: Optional[HandGestureConfig] = None):
         self.recognizer = HandGestureRecognizer(config or HandGestureConfig())
+        self.selector = HandSelector()
         # Light smoothing in screen pixels: the fingertip is far steadier than gaze.
         self.filter = OneEuroFilter(OneEuroParams(min_cutoff=1.2, beta=0.004))
         self.calibration: Optional[HandCalibration] = None

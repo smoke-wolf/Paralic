@@ -243,3 +243,34 @@ def test_server_without_hand_mode(tmp_path):
                 break
             time.sleep(0.02)
         assert status["hands"] == "unavailable" and "no model" in status["hands_error"]
+
+
+def test_another_hand_in_view_does_not_take_over():
+    from paralic.hand_control import HandSelector
+
+    sel = HandSelector()
+    mine = lambda k: make_hand(centre=(0.40 + 0.003 * k, 0.6))            # noqa: E731
+    bigger = make_hand(centre=(0.75, 0.55), width=0.22)                    # nearer the camera
+    picks = [sel.select(k / 30, [mine(k)]) for k in range(5)]
+    picks += [sel.select((5 + k) / 30, [bigger, mine(5 + k)]) for k in range(30)]
+    assert picks == [0] * 5 + [1] * 30
+    # The hand in control goes away: after a moment, the hand still in view takes over.
+    assert sel.select(1.2, [bigger]) == 0 and sel.select(2.5, [bigger]) == 0
+
+
+def test_real_photo_with_two_hands(tmp_path):
+    from paralic.hands import HandTracker
+    from tests.hand_images import hand_image
+    from tests.test_hand_mediapipe import MODEL
+
+    img = hand_image("open_hands")
+    if img is None or not MODEL.is_file():
+        pytest.skip("hand model or photo not available")
+    tracker = HandTracker(MODEL.read_bytes())
+    try:
+        hands = []
+        for k in range(3):
+            hands = tracker.process_all(img, 33 * k)
+    finally:
+        tracker.close()
+    assert len(hands) == 2

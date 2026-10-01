@@ -1160,3 +1160,4 @@ body.hand-mode .say-eyes, body.hand-mode .eyes-only { display: none !important; 
 .hand-note { margin: 8px 0 0; }
 .version-tag { position: absolute; right: 18px; bottom: 12px; font-size: 0.8rem; color: var(--muted, #8a93a6); }
 .overlay-card:has(> .version-tag) { position: relative; }
+.waiting-banner { font-weight: 600; max-width: min(720px, 92vw); }

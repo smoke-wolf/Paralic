@@ -46,10 +46,14 @@ def decode_image(data: bytes) -> np.ndarray:
 
 
 class FaceTracker:
-    """Runs FaceLandmarker in VIDEO mode (it tracks the face between frames)."""
+    """Runs FaceLandmarker in VIDEO mode (it tracks the faces between frames).
 
-    def __init__(self, model_bytes: bytes, *, min_detection: float = 0.5, min_presence: float = 0.5,
-                 min_tracking: float = 0.5):
+    It reports up to ``max_faces`` faces: when someone else is in view, the
+    session follows the right person (see face_select.py).
+    """
+
+    def __init__(self, model_bytes: bytes, *, max_faces: int = 3, min_detection: float = 0.5,
+                 min_presence: float = 0.5, min_tracking: float = 0.5):
         import mediapipe as mp
         from mediapipe.tasks.python import BaseOptions, vision
 
@@ -57,7 +61,7 @@ class FaceTracker:
         options = vision.FaceLandmarkerOptions(
             base_options=BaseOptions(model_asset_buffer=model_bytes),
             running_mode=vision.RunningMode.VIDEO,
-            num_faces=1,
+            num_faces=max_faces,
             min_face_detection_confidence=min_detection,
             min_face_presence_confidence=min_presence,
             min_tracking_confidence=min_tracking,
@@ -67,28 +71,35 @@ class FaceTracker:
         self._landmarker = vision.FaceLandmarker.create_from_options(options)
         self._last_ts = -1
 
-    def process(self, rgb: np.ndarray, timestamp_ms: int) -> Optional[FaceObservation]:
+    def process_all(self, rgb: np.ndarray, timestamp_ms: int) -> list[FaceObservation]:
+        """Every face in the frame (largest first)."""
         # VIDEO mode requires strictly increasing timestamps.
         ts = max(int(timestamp_ms), self._last_ts + 1)
         self._last_ts = ts
         h, w = rgb.shape[:2]
         image = self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
         result = self._landmarker.detect_for_video(image, ts)
-        if not result.face_landmarks:
-            return None
-        lms = result.face_landmarks[0]
-        pts = np.empty((len(lms), 3), dtype=np.float64)
-        for i, p in enumerate(lms):
-            pts[i, 0] = p.x * w
-            pts[i, 1] = p.y * h
-            pts[i, 2] = p.z * w
-        blend = {}
-        if result.face_blendshapes:
-            blend = {c.category_name: float(c.score) for c in result.face_blendshapes[0]}
-        matrix = None
-        if result.facial_transformation_matrixes:
-            matrix = np.asarray(result.facial_transformation_matrixes[0], dtype=np.float64).reshape(4, 4)
-        return FaceObservation(points_px=pts, image_size=(w, h), blendshapes=blend, matrix=matrix)
+        faces = []
+        for k, lms in enumerate(result.face_landmarks or []):
+            pts = np.empty((len(lms), 3), dtype=np.float64)
+            for i, p in enumerate(lms):
+                pts[i, 0] = p.x * w
+                pts[i, 1] = p.y * h
+                pts[i, 2] = p.z * w
+            blend = {}
+            if result.face_blendshapes and k < len(result.face_blendshapes):
+                blend = {c.category_name: float(c.score) for c in result.face_blendshapes[k]}
+            matrix = None
+            if result.facial_transformation_matrixes and k < len(result.facial_transformation_matrixes):
+                matrix = np.asarray(result.facial_transformation_matrixes[k], dtype=np.float64).reshape(4, 4)
+            faces.append(FaceObservation(points_px=pts, image_size=(w, h), blendshapes=blend, matrix=matrix))
+        faces.sort(key=lambda f: -float(np.ptp(f.points_px[:, 0]) * np.ptp(f.points_px[:, 1])))
+        return faces
+
+    def process(self, rgb: np.ndarray, timestamp_ms: int) -> Optional[FaceObservation]:
+        """The largest face, or None."""
+        faces = self.process_all(rgb, timestamp_ms)
+        return faces[0] if faces else None
 
     def close(self) -> None:
         lm, self._landmarker = getattr(self, "_landmarker", None), None

@@ -11,6 +11,7 @@ import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
 import { HandCalibrator } from './hand-calibration.js';
 import { attachGlassesUi, glassesAdvice } from './glasses-ui.js';
+import { attachFacesUi } from './faces-ui.js';
 import { say } from './mode.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
@@ -330,6 +331,7 @@ class App {
     });
     this.tracker.on('system_control', (m) => this.onSystemControl(m));
     if (!simulated && mode !== 'hand') attachGlassesUi(this);
+    if (!simulated) attachFacesUi(this);
     // Learn from clicks: the frames before each double-blink click are training data.
     this.gaze.addEventListener('activate', (e) => this.learnFromActivation(e.detail));
   }
