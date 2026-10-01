@@ -8,6 +8,7 @@ import { EyeTracker, SimTracker } from './tracker.js';
 import { GazeController } from './gaze.js';
 import { GestureController } from './gestures.js';
 import { Calibrator, rateAccuracy } from './calibration.js';
+import { HandCalibrator } from './hand-calibration.js';
 import { CameraPanel } from './camera-panel.js';
 import { getSettings, onSettingsChange, serverSettings, updateSettings } from './settings.js';
 import { unlockAudio } from './sound.js';
@@ -490,9 +491,9 @@ class App {
     card.remove();
     this.camera.setVisible(getSettings().showCamera);
 
-    // Hand mode drives the cursor directly from the fingertip — there is no gaze
-    // network to calibrate, so skip the profile/calibration flow and start.
+    // Hand mode: run (or reuse) a proper pointing + pinch calibration.
     if (this.state.handMode) {
+      await this.runHandSetup(ov);
       this.state.calibrated = true;
       this.gaze.setActive(true);
       this.closeOverlay(ov);
@@ -503,6 +504,31 @@ class App {
     // Several people use this computer: ask who it is first.
     if ((this.state.people || []).length > 1) await this.pickPerson(ov);
     await this.enterAsPerson(ov);
+  }
+
+  /** Hand mode: run a fresh pointing+pinch setup, or reuse a saved one. */
+  async runHandSetup(ov) {
+    const cal = new HandCalibrator(this);
+    const saved = this.state.hello && this.state.hello.calibration;
+    let mode = 'full';
+    if (saved) {
+      this.gaze.setActive(true);
+      this.gaze.setSuspended(false);
+      const choice = await this.choose(ov, {
+        choices: [
+          { id: 'use', label: 'Use saved setup', sub: 'Keep your last hand calibration', icon: 'check', primary: true },
+          { id: 'point', label: 'Quick re-point', sub: 'Redo just the pointing dots', icon: 'mouse' },
+          { id: 'full', label: 'Full setup', sub: 'Hand span, pointing and pinch', icon: 'refresh' },
+        ],
+      }).catch(() => 'use');
+      this.gaze.setSuspended(true);
+      if (choice === 'use') {
+        await this.tracker.request({ type: 'hand_profile_use' }, 'hand_calibration_result', 8000).catch(() => {});
+        return;
+      }
+      mode = choice === 'point' ? 'point' : 'full';
+    }
+    await cal.run({ mode });
   }
 
   /** Load the current person's calibration and offer to use, adjust or redo it. */

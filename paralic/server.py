@@ -132,7 +132,9 @@ def create_app(*, data_dir: Path, web_dir: Path = DEFAULT_WEB_DIR,
                 hfac = _unavailable("Hand tracker unavailable")
             else:
                 hfac = hand_tracker_factory
-            session = await loop.run_in_executor(executor, lambda: HandSession(hfac, push=push))
+            hand_profile = Path(data_dir) / "hand_profile.json"
+            session = await loop.run_in_executor(
+                executor, lambda: HandSession(hfac, push=push, profile_path=hand_profile))
         else:
             if tracker_factory is None:
                 # No face tracking, but keep the connection for people / lab commands (demo mode).
