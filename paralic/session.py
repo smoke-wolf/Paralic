@@ -58,6 +58,7 @@ from .blink import BLINK_SENSITIVITY_PRESETS, DOUBLE_BLINK_GAP_PRESETS, BlinkDet
 from .calibration import (FIXATION_KINDS, CalibrationData, CalibrationError, LabeledFrame, ProfileStore,
                           SettleTracker, calibrated_pose, evaluate_validation, fit_adjustment, fit_eye_models,
                           fit_full_calibration)
+from .diagnose import advice
 from .face_select import FaceSelector, face_box
 from .faceprint import MARGIN, MIN_SAMPLES, FaceRecognizer, FaceSample, choose_samples, make_sample
 from .features import extract_features, face_lighting, mesh_overlay, overlay_points
@@ -1153,6 +1154,7 @@ class TrackerSession:
         if cmd.get("save", True):
             saved = self._save_profile()
         self._save_personal()
+        result["advice"] = advice(result.get("points") or [], self.screen)
         return [{"type": "validation_result", "ok": True, "saved": saved, **result,
                  "glasses": bool(self.profile_meta.get("glasses")), "personal": self.personal_view()}]
 

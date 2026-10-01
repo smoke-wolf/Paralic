@@ -807,9 +807,13 @@ export class Calibrator {
       h('div', { class: `score ${rating}` }, labels[rating]),
       h('p', { class: 'muted' }, `Average error ${Math.round(result.mean_error_px)} px, jitter ${Math.round(result.precision_px)} px. `,
         rating === 'poor' || rating === 'fair'
-          ? 'Tip: sit centred in front of the camera with your face evenly lit, keep glasses free of reflections, '
-            + 'and look right at each dot until it is gone — then try again.'
+          ? (result.advice && result.advice.length ? 'What would help most:'
+            : 'Tip: sit centred in front of the camera with your face evenly lit, keep glasses free of reflections, '
+              + 'and look right at each dot until it is gone — then try again.')
           : 'Rings show the dots, purple points where the network thinks you looked.'),
+      // What limits the accuracy, measured on these dots (paralic/diagnose.py).
+      (rating === 'poor' || rating === 'fair') && result.advice && result.advice.length
+        ? h('ul', { class: 'results-advice' }, result.advice.map((a) => h('li', {}, a))) : null,
       history,
       dropped ? h('p', { class: 'muted' }, `${dropped} dot${dropped > 1 ? 's were' : ' was'} left out: your eyes seemed to be elsewhere then.`) : null,
     );

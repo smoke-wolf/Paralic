@@ -174,6 +174,8 @@ def test_validation_saves_profile_and_profile_loads(env, tmp_path, monkeypatch):
     res = session.handle_command({"type": "validation_finish"})[0]
     assert res["type"] == "validation_result" and res["ok"] and res["saved"]
     assert res["mean_error_px"] < 120 and len(res["points"]) == 5
+    # What would help most (paralic/diagnose.py), for the results screen.
+    assert isinstance(res["advice"], list) and all(isinstance(a, str) for a in res["advice"])
     assert session.profiles.exists()
     # Smoothing and the button magnet were personalised from the validation.
     assert res["personal"]["smoothing_profile"]["tuned_level"] is not None

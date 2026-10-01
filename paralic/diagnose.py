@@ -93,7 +93,7 @@ def validation_parts(points: list, screen: Optional[dict] = None) -> Optional[di
     }
 
 
-def _findings_for(v: dict) -> list[str]:
+def findings_for(v: dict) -> list[str]:
     """The sentences for one accuracy check, the most important first."""
     out = []
     err = v["mean_error_px"]
@@ -202,6 +202,12 @@ def learning_summary(events: list) -> dict:
             "finetunes_accepted": accepted}
 
 
+def advice(points: list, screen: Optional[dict] = None, limit: int = 2) -> list[str]:
+    """The first findings for one accuracy check (shown on the page's results screen)."""
+    parts = validation_parts(points, screen)
+    return findings_for(parts)[:limit] if parts else []
+
+
 def _condition_findings(c: dict, learning: dict, mode: str) -> list[str]:
     out = []
     thing = "hand" if mode == "hand" else "face"
@@ -249,7 +255,7 @@ def diagnose(view) -> dict:
         if parts is None:
             continue
         checks.append({"t": s.get("t0"), "mode": s.get("mode") or s.get("kind"), **parts,
-                       "findings": _findings_for(parts)})
+                       "findings": findings_for(parts)})
     conditions = frame_conditions(rec)
     learning = learning_summary(rec.events())
     findings = list(checks[-1]["findings"]) if checks else []

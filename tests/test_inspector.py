@@ -632,8 +632,8 @@ def test_the_diagnosis_takes_each_accuracy_check_apart(client, demos, eyes):
                  "spread": 20, "n": 16} for x, y in grid]
     v = validation_parts(vertical, {"w": 1920, "h": 1080})
     assert v["vertical_px"] > 5 * v["horizontal_px"] and v["edge_px"] > 1.6 * v["middle_px"]
-    from paralic.diagnose import _findings_for
-    text = " ".join(_findings_for(v))
+    from paralic.diagnose import findings_for
+    text = " ".join(findings_for(v))
     assert "Up-down" in text and "edges" in text
     assert validation_parts([{"target": [1, 2], "mean": [3, 4]}]) is None      # too few dots
     # The whole recording, through the API.

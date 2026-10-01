@@ -1184,3 +1184,5 @@ body.hand-mode .say-eyes, body.hand-mode .eyes-only { display: none !important; 
 .shooter-pause::after { content: ''; position: absolute; left: 0; bottom: 0; height: 5px; width: calc(var(--p, 0) * 100%);
   background: var(--accent); }
 body.game-aiming .gaze-cursor { opacity: 0; }
+.results-advice { margin: 4px 0 10px; padding-left: 1.2em; color: var(--muted); line-height: 1.45; }
+.results-advice li { margin: 4px 0; }
